@@ -2836,7 +2836,12 @@ class NovelAIWebPlugin(star.Star):
 
         if subcommand not in {"生成", "参考", "原始"}:
             yield event.plain_result(
-                "用法：/n5 生成|参考|原始 <内容>；发送 /n5 help 查看全部指令。"
+                "请输入生图描述。\n"
+                "示例：/n5 生成 雪夜车站里的银发少女\n"
+                "其他模式：\n"
+                "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
+                "/n5 原始 <Prompt>：跳过提示词优化\n"
+                "发送 /n5 help 查看完整帮助。"
             )
             return
         prompt_text = arguments
