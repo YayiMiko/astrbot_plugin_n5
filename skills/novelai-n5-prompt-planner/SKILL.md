@@ -1,6 +1,6 @@
 ---
 name: novelai-n5-prompt-planner
-description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 Curated 的标签与自然语言混合 Prompt。用于 QQ/AstrBot 绘图指令的提示词扩写、构图规划、镜头与光照补全、冲突消解、权重设置和 Prompt 质检；不负责浏览器自动化、登录、排队或图片下载。
+description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 Curated 的标签与自然语言混合 Prompt。用于 QQ/AstrBot 绘图指令的提示词扩写、构图规划、镜头与光照补全、冲突消解、权重设置和 Prompt 质检。
 ---
 
 # NovelAI Prompt Planner
