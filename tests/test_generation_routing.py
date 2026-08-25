@@ -221,7 +221,7 @@ def test_nonempty_group_whitelist_still_limits_authorized_sender() -> None:
 
 @pytest.mark.asyncio
 async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> None:
-    """Keep a complete NovelAI tag prompt byte-for-byte unchanged."""
+    """Bypass planning while still applying the global NSFW direction."""
     plugin = build_plugin()
     prompt = "((artist:ame_usari)), [artist:sousouman], 1girl, solo"
 
@@ -231,7 +231,7 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
 
     plugin._plan_prompt.assert_not_awaited()
     plugin._generate_from_api.assert_awaited_once_with(
-        prompt,
+        f"nsfw, {prompt}",
         (832, 1216),
         (),
         "",
@@ -255,7 +255,7 @@ async def test_natural_language_still_uses_planner() -> None:
 
     plugin._plan_prompt.assert_awaited_once()
     plugin._generate_from_api.assert_awaited_once_with(
-        "1girl, eating ice cream, happy",
+        "nsfw, 1girl, eating ice cream, happy",
         (832, 1216),
         (),
         "",
@@ -857,7 +857,7 @@ async def test_character_generation_uses_native_captions() -> None:
     ]
 
     plugin._generate_from_api.assert_awaited_once_with(
-        "2girls, hugging, outdoors, spring",
+        "nsfw, 2girls, hugging, outdoors, spring",
         (832, 1216),
         (
             "girl, red hair, blue eyes, mutual#hug",
@@ -870,8 +870,8 @@ async def test_character_generation_uses_native_captions() -> None:
 
 
 @pytest.mark.asyncio
-async def test_single_nude_character_adds_solo_rating_and_duplicate_guards() -> None:
-    """Keep an explicit single-character request singular and content-rated."""
+async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> None:
+    """Keep an explicit single-character request singular and globally NSFW."""
     plugin = build_plugin()
     replacements = [
         (
@@ -902,7 +902,7 @@ async def test_single_nude_character_adds_solo_rating_and_duplicate_guards() -> 
     ]
 
     plugin._generate_from_api.assert_awaited_once_with(
-        "1girl, solo, nude, rating:explicit, full body, white background",
+        "nsfw, 1girl, solo, nude, full body, white background",
         (832, 1216),
         (
             "girl, cartethyia (wuthering waves), blonde hair, nude, standing, relaxed pose",
@@ -934,7 +934,7 @@ async def test_redraw_reuses_native_character_captions() -> None:
     results = [result async for result in plugin.generate_image(event, "重抽")]
 
     plugin._generate_from_api.assert_awaited_once_with(
-        "2girls, hugging, spring",
+        "nsfw, 2girls, hugging, spring",
         (832, 1216),
         character_prompts,
         "lowres",
@@ -942,7 +942,7 @@ async def test_redraw_reuses_native_character_captions() -> None:
     )
     plugin._remember_last_prompt.assert_awaited_once_with(
         event,
-        "2girls, hugging, spring",
+        "nsfw, 2girls, hugging, spring",
         character_prompts,
         "lowres",
         ("extra fingers", "bad eyes"),
@@ -1182,8 +1182,8 @@ def test_official_knowledge_is_model_scoped_and_traceable() -> None:
 
 
 @pytest.mark.asyncio
-async def test_v5_payload_uses_protocol_v4_and_explicit_style_controls() -> None:
-    """Send the V5 model fields without hidden quality or UC presets."""
+async def test_v5_payload_uses_global_nsfw_without_content_rating() -> None:
+    """Send global NSFW while removing content ratings from the V5 payload."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "steps": 23,
@@ -1245,9 +1245,12 @@ async def test_v5_payload_uses_protocol_v4_and_explicit_style_controls() -> None
     client = CapturingClient()
     plugin._get_api_client = Mock(return_value=client)
 
-    result = await plugin._generate_from_api("1girl, solo", (832, 1216))
+    result = await plugin._generate_from_api(
+        "1girl, solo, rating:explicit, NSFW", (832, 1216)
+    )
 
     assert result == Path("generated.png")
+    assert client.payload["input"] == "nsfw, 1girl, solo"
     assert client.payload["model"] == "nai-diffusion-5-curated"
     parameters = client.payload["parameters"]
     assert parameters["params_version"] == 4

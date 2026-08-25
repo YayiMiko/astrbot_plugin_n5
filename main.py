@@ -1277,6 +1277,31 @@ class NovelAIWebPlugin(star.Star):
         return normalized_content
 
     @staticmethod
+    def _apply_global_nsfw_prompt(content: str) -> str:
+        """Apply the global NSFW direction without content-rating tags.
+
+        Args:
+            content: Positive prompt before the NovelAI request.
+
+        Returns:
+            Prompt with one global ``nsfw`` token and no ``rating:`` items.
+        """
+        prompt_items = [item.strip() for item in content.split(",") if item.strip()]
+        prompt_items = [
+            item
+            for item in prompt_items
+            if item.casefold() != "nsfw"
+            and not re.search(r"(?i)(?<![a-z0-9_])rating\s*:", item)
+        ]
+        insert_at = 0
+        while insert_at < len(prompt_items) and re.match(
+            r"(?i)^artist\s*:", prompt_items[insert_at]
+        ):
+            insert_at += 1
+        prompt_items.insert(insert_at, "nsfw")
+        return ", ".join(prompt_items)
+
+    @staticmethod
     def _character_name_pattern(name: str) -> re.Pattern[str]:
         """Build a literal matcher without matching inside ASCII identifiers."""
         escaped_name = re.escape(name)
@@ -2843,6 +2868,7 @@ class NovelAIWebPlugin(star.Star):
                     negative_prompt,
                     character_negative_prompts,
                 ) = last_generation
+                prompt_text = self._apply_global_nsfw_prompt(prompt_text)
                 generation_size = await self._user_generation_size(event)
             except NovelAIWebError as exc:
                 yield event.plain_result(str(exc))
@@ -3000,31 +3026,6 @@ class NovelAIWebPlugin(star.Star):
                         prompt_text,
                         character_prompts,
                     )
-                    if explicit_nudity:
-                        prompt_items = [
-                            item.strip()
-                            for item in prompt_text.split(",")
-                            if item.strip()
-                            and item.strip().casefold()
-                            not in {
-                                "rating:explicit",
-                                "rating:general",
-                                "rating:sensitive",
-                            }
-                        ]
-                        insert_at = next(
-                            (
-                                index + 1
-                                for index, item in enumerate(prompt_items)
-                                if re.search(
-                                    r"(?i)(?<![a-z])(?:nude|naked)(?![a-z])",
-                                    item,
-                                )
-                            ),
-                            1,
-                        )
-                        prompt_items.insert(insert_at, "rating:explicit")
-                        prompt_text = ", ".join(prompt_items)
                     if len(character_prompts) == 1:
                         duplicate_guards = (
                             "multiple girls",
@@ -3048,6 +3049,7 @@ class NovelAIWebPlugin(star.Star):
                         negative_prompt = ", ".join(negative_items)
                     if selected_artist is not None:
                         prompt_text = f"{artist_content}, {prompt_text}"
+                    prompt_text = self._apply_global_nsfw_prompt(prompt_text)
                     if len(prompt_text) + sum(map(len, character_prompts)) > (
                         max_prompt_length
                     ):
@@ -3110,6 +3112,7 @@ class NovelAIWebPlugin(star.Star):
         Raises:
             NovelAIWebError: If a guard, authentication, network, or response fails.
         """
+        prompt = self._apply_global_nsfw_prompt(prompt)
         try:
             width, height = self._validate_generation_size(*generation_size)
             steps = int(self.config.get("steps", DEFAULT_STEPS))

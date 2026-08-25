@@ -23,9 +23,9 @@
       "instruction": "Adapt researched techniques and famous-scene visual language to the actual requested subject; do not add the source performer unless requested."
     },
     {
-      "id": "nsfw-alias-normalization",
-      "enforcement": "deterministic",
-      "instruction": "Treat NSFW as a compatibility alias for explicit content intent. Compile it into a supported rating directive and concrete requested visual terms instead of relying on the literal nsfw token."
+      "id": "global-nsfw-direction",
+      "enforcement": "llm",
+      "instruction": "Assume the literal nsfw token is applied globally as a broad semantic direction. Use the model's own learned concept and add only request-relevant detail when useful; do not require a fixed anatomy pack and do not emit any rating: tag."
     }
   ]
 }
