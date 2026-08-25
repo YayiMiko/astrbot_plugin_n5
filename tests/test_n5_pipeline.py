@@ -1,6 +1,7 @@
 """Tests for request-scoped images and NovelAI-native identity resolution."""
 
 import json
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,9 +12,13 @@ from PIL.PngImagePlugin import PngInfo
 
 from astrbot.core.message.components import Image
 
-from identity_planner import plan_identities
-from image_context import resolve_request_images
-from novelai_tags import NovelAITagResolver
+PLUGIN_DIR = Path(__file__).resolve().parents[1]
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
+
+from identity_planner import identity_alias_key, plan_identities  # noqa: E402
+from image_context import resolve_request_images  # noqa: E402
+from novelai_tags import NovelAITagResolver  # noqa: E402
 
 
 class ImageEvent:
@@ -124,3 +129,141 @@ async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
     assert identities[0].immutable_prompt == (
         "mornye (wuthering waves), girl, silver hair, blue eyes"
     )
+
+
+@pytest.mark.asyncio
+async def test_identity_planner_repairs_failed_romanization_with_web_evidence() -> None:
+    """Search translated names only after the first NovelAI lookup fails."""
+
+    class FakeToolSet:
+        @staticmethod
+        def get_tool(name: str):
+            assert name == "web_search_tavily"
+            return SimpleNamespace(name=name, active=True)
+
+    class FakeToolManager:
+        @staticmethod
+        def get_full_tool_set():
+            return FakeToolSet()
+
+    class FakeContext:
+        @staticmethod
+        async def llm_generate(**kwargs):
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "characters": [
+                            {
+                                "source_name": "卡缇希娅",
+                                "work": "Wuthering Waves",
+                                "role": "outfit_source",
+                                "candidate_tags": [
+                                    "Catthy (Wuthering Waves)",
+                                    "Catthy",
+                                ],
+                                "appearance": "girl, long blonde hair",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        @staticmethod
+        def get_llm_tool_manager():
+            return FakeToolManager()
+
+        @staticmethod
+        async def tool_loop_agent(**kwargs):
+            assert kwargs["max_steps"] == 3
+            assert kwargs["tools"].get_tool("web_search_tavily") is not None
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "official_name": "Cartethyia",
+                        "work_en": "Wuthering Waves",
+                        "candidate_tags": [
+                            "cartethyia (wuthering waves)",
+                            "cartethyia",
+                        ],
+                    }
+                )
+            )
+
+    class FakeResolver:
+        def __init__(self) -> None:
+            self.calls: list[list[str]] = []
+
+        async def resolve(self, source_name: str, candidates: list[str]):
+            from novelai_tags import TagResolution
+
+            self.calls.append(candidates)
+            if "cartethyia (wuthering waves)" in candidates:
+                return TagResolution(
+                    source_name,
+                    "cartethyia (wuthering waves)",
+                    "cartethyia (wuthering waves)",
+                )
+            return TagResolution(source_name, None, candidates[0])
+
+    resolver = FakeResolver()
+    identities = await plan_identities(
+        FakeContext(),
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "明日方舟角色阿米娅穿着鸣潮角色卡缇希娅的衣服",
+        (),
+        "",
+        resolver,
+        event=SimpleNamespace(),
+    )
+
+    assert len(resolver.calls) == 2
+    assert identities[0].verified is True
+    assert identities[0].role == "outfit_source"
+    assert identities[0].canonical_tag == "cartethyia (wuthering waves)"
+
+
+@pytest.mark.asyncio
+async def test_verified_alias_cache_skips_network_repair() -> None:
+    """Trust only a canonical alias that was previously NovelAI-verified."""
+
+    class FakeContext:
+        @staticmethod
+        async def llm_generate(**kwargs):
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "characters": [
+                            {
+                                "source_name": "卡缇希娅",
+                                "work": "Wuthering Waves",
+                                "role": "visible_subject",
+                                "candidate_tags": ["Catthy"],
+                                "appearance": "girl, long blonde hair",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    class RejectUnexpectedResolver:
+        @staticmethod
+        async def resolve(source_name: str, candidates: list[str]):
+            raise AssertionError("verified cache should skip official lookup")
+
+    canonical = "cartethyia (wuthering waves)"
+    identities = await plan_identities(
+        FakeContext(),
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "卡缇希娅",
+        (),
+        "",
+        RejectUnexpectedResolver(),
+        verified_aliases={
+            identity_alias_key("卡缇希娅", "Wuthering Waves"): canonical
+        },
+    )
+
+    assert identities[0].verified is True
+    assert identities[0].canonical_tag == canonical

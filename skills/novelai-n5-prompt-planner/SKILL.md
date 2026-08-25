@@ -37,6 +37,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 - 职业或身份不能只逐词翻译；必须补充典型、可见、与场景相容的职业道具和动作，使主体身份能在画面中成立。“画师/画家”作为主体时至少需要绘画动作、画笔及画布或画架等锚点，只有 `painter` 或 `beret` 不合格；用户明确排除动作或道具时尊重原要求。画师主体与画师风格串是两回事。
 - 不生成画师串。画师串由插件在最终 Prompt 前独立拼接。
 - 遇到 `__NAI_CHARACTER_SLOT_数字__` 时，把它作为 `character_prompts` 的键原样保留且每个只出现一次。人物库会注入固定身份和固有外观；规划器不得复读或改写这些固定特征，但必须为对应角色补全本图主题服装、材质配色、纹样饰件、手持物、动作、表情、姿势和视线。
+- 遇到插件标注为 `outfit source`、`appearance source` 或 `cosplay identity` 且注明 `not an additional visible character` 的规范角色 Tag 时，只借用相应的服装、外观或扮演设计，不把来源角色计入人数或作为第二个出场人物，也不把内部标记写入最终 Prompt。
 - 不输出 `char1:`、`char2:` 或多角色字段；当前 API 请求只使用主 Prompt 与独立配置的 negative prompt。多人物关系写进主 Prompt。
 - 默认不改 negative prompt。只有调用方明确要求时才另行规划负面提示。
 - 质量与复杂度使用一个短基线即可，不拼接多套“质量词包”。普通精美插画可用 `high complexity, depthness, masterpiece, no text`；需要文字时省略 `no text`，Q版、扁平或特殊媒介按题材降低复杂度并避免 `depthness`。

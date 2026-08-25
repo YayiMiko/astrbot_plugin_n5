@@ -7,7 +7,7 @@
 ## 功能特性
 
 - **多模态提示词规划**：自然语言描述由 DeepSeek（默认 `deepseek/deepseek-v4-flash-vision-exp`）规划为标签 + 自然语言的混合 Prompt，支持原生图片输入（`/n5 参考`）。
-- **官方身份词表锁定**：用 NovelAI `suggest-tags` 作为角色身份的权威词表，只有精确匹配的规范标签才会被采纳；其余候选与外观描述会保留但标记为「未确认」。
+- **联网译名纠错与官方身份锁定**：首次候选未命中时调用 AstrBot 已配置的 Tavily 搜索，通过角色原名与作品名查找官方英文名或通用罗马字，再由 NovelAI `suggest-tags` 精确复核；验证成功的别名会缓存，未验证结果不会冒充官方 Tag。
 - **图源解析**：优先读取本条消息中的图片，其次读取引用消息中的图片。
 - **NovelAI PNG 元数据优先**：带图请求会先读取 PNG 内嵌的 `Description` / `Comment` 元数据，身份事实优先于视觉猜测。
 - **人物库**：群成员可保存「全局人物」，命中角色名时自动注入固定身份与固有外观，再由规划器补全本图服装、道具与动态。
@@ -25,10 +25,11 @@
 
 1. 用户发送 `/n5 生成 <描述>`，插件按「本条图片 → 引用图片」的优先级解析请求级图片与 NovelAI PNG 元数据。
 2. 若输入是现成的 NovelAI 标签 Prompt（或使用 `/n5 原始`），则**跳过自然语言规划**，原样直通。
-3. 否则把描述交给独立 Provider 的 DeepSeek 规划器，输出严格单行 JSON：`{"ok":true,"prompt":"...","character_prompts":{...},"error":null}`。
-4. 插件校验规划结果：拒绝画师字段、人物占位符泄漏、长度超限、互斥约束无法消解等；并对「画师」这类职业主体强制补全视觉锚点（如 `painter, holding paintbrush, canvas`）。
-5. 命中人物库角色时，把角色名替换为 `__NAI_CHARACTER_SLOT_<数字>__` 槽位，规划器只负责该角色的本图动态 Prompt，固定身份与固有外观由人物库注入。
-6. 最终按「当前画师串 + 主 Prompt」拼接，调用 NovelAI 官方 `/ai/generate-image`，解析 ZIP / JSON / SSE 返回的图片，校验尺寸一致后保存。
+3. 对明确命名的作品角色先生成官方名称候选并查询 NovelAI 词表；首次未命中时才联网检索译名，并将搜索证据交给 LLM 纠错后再次精确验证。服装、外观或扮演来源不会被计为额外出场人物。
+4. 随后把描述交给独立 Provider 的 DeepSeek 规划器，输出严格单行 JSON：`{"ok":true,"prompt":"...","character_prompts":{...},"error":null}`。
+5. 插件校验规划结果：拒绝画师字段、人物占位符泄漏、长度超限、互斥约束无法消解等；并对「画师」这类职业主体强制补全视觉锚点（如 `painter, holding paintbrush, canvas`）。
+6. 命中人物库角色时，把角色名替换为 `__NAI_CHARACTER_SLOT_<数字>__` 槽位，规划器只负责该角色的本图动态 Prompt，固定身份与固有外观由人物库注入。
+7. 最终按「当前画师串 + 主 Prompt」拼接，调用 NovelAI 官方 `/ai/generate-image`，解析 ZIP / JSON / SSE 返回的图片，校验尺寸一致后保存。
 
 ---
 
