@@ -69,6 +69,17 @@ CHARACTER_SUBJECT_PATTERN = re.compile(
     r"(?<![a-z0-9_])(?:1\s*)?(girl|boy|other)(?![a-z0-9_])",
     re.IGNORECASE,
 )
+EXPLICIT_NUDITY_SOURCE_PATTERN = re.compile(
+    r"(?:裸体|全裸|赤裸|一丝不挂|不穿衣服|脱光|\b(?:fully\s+)?nude\b|"
+    r"\bnaked\b|\bwithout\s+clothes\b)",
+    re.IGNORECASE,
+)
+CLOTHING_TAG_PATTERN = re.compile(
+    r"(?i)(?<![a-z])(?:dress|uniform|shirt|blouse|coat|jacket|skirt|pants|"
+    r"trousers|shorts|underwear|lingerie|swimsuit|bikini|robe|cape|cloak|"
+    r"sweater|cardigan|stockings?|socks?|gloves?|boots?|shoes?|bra|panties|"
+    r"leotard|bodysuit|armor|clothing|clothes)(?![a-z])"
+)
 NOVELAI_PROMPT_SIGNAL_PATTERN = re.compile(
     r"(?:\b(?:artist|character|copyright|series|rating)\s*:|"
     r"\b\d+(?:girls?|boys?|women|men)\b|"
@@ -141,6 +152,11 @@ SEMANTIC_ANCHOR_RULES = (
         "exhausted",
         re.compile(r"疲惫|疲倦|筋疲力尽|燃尽了|burned? out|exhausted", re.IGNORECASE),
         re.compile(r"exhausted|tired|fatigue|burned? out", re.IGNORECASE),
+    ),
+    (
+        "nude",
+        EXPLICIT_NUDITY_SOURCE_PATTERN,
+        re.compile(r"(?<![a-z])(?:nude|naked)(?![a-z])", re.IGNORECASE),
     ),
 )
 PROMPT_PLANNER_SYSTEM_PROMPT_PATHS = (
@@ -1838,6 +1854,7 @@ class NovelAIWebPlugin(star.Star):
         replacements: list[tuple[str, str, str, str]],
         dynamic_prompts: dict[str, str],
         max_length: int,
+        explicit_nudity: bool = False,
     ) -> tuple[str, ...]:
         """Build native V5 captions from immutable identity and per-image design.
 
@@ -1845,6 +1862,7 @@ class NovelAIWebPlugin(star.Star):
             replacements: Slot, character name, and saved immutable prompt tuples.
             dynamic_prompts: Per-slot clothing, props, actions, and expressions.
             max_length: Maximum combined character prompt length.
+            explicit_nudity: Whether explicit user intent must override garments.
 
         Returns:
             Native character captions in original mention order.
@@ -1882,6 +1900,12 @@ class NovelAIWebPlugin(star.Star):
                     item,
                 )
                 saved_items.append(item)
+            if explicit_nudity:
+                saved_items = [
+                    item
+                    for item in saved_items
+                    if not CLOTHING_TAG_PATTERN.search(item)
+                ]
             if not any(
                 CHARACTER_SUBJECT_PATTERN.fullmatch(item) for item in saved_items
             ):
@@ -1892,6 +1916,17 @@ class NovelAIWebPlugin(star.Star):
                 for item in dynamic_prompts[slot].split(",")
                 if item.strip()
             ]
+            if explicit_nudity:
+                dynamic_items = [
+                    item
+                    for item in dynamic_items
+                    if not CLOTHING_TAG_PATTERN.search(item)
+                ]
+                if not any(
+                    re.search(r"(?i)(?<![a-z])(?:nude|naked)(?![a-z])", item)
+                    for item in dynamic_items
+                ):
+                    dynamic_items.insert(0, "nude")
             dynamic_items = [
                 item
                 for item in dynamic_items
@@ -1928,7 +1963,7 @@ class NovelAIWebPlugin(star.Star):
             counts[subject] += 1
 
         count_pattern = re.compile(
-            r"(?i)^(?:\d+\s*(?:girls?|boys?|others?|people|persons|characters)|"
+            r"(?i)^(?:\d+\s*(?:girls?|boys?|others?|people|persons?|characters)|"
             r"(?:one|two|three|four|five|six)\s+"
             r"(?:girls?|boys?|others?|people|persons|characters)|"
             r"multiple\s+(?:girls?|boys?|others?|people|persons|characters))$"
@@ -2982,6 +3017,7 @@ class NovelAIWebPlugin(star.Star):
             prompt_text, character_replacements = await self._resolve_character_slots(
                 event, prompt_text
             )
+            explicit_nudity = bool(EXPLICIT_NUDITY_SOURCE_PATTERN.search(prompt_text))
             unresolved_identities: list[str] = []
             creative_reference_context = ""
             if not is_direct_prompt:
@@ -3043,6 +3079,7 @@ class NovelAIWebPlugin(star.Star):
                         character_replacements,
                         plan["character_prompts"],
                         max_prompt_length,
+                        explicit_nudity,
                     )
                     character_negative_prompts = tuple(
                         character_negative_prompt

@@ -17,7 +17,7 @@ except ImportError:
 
 IDENTITY_SYSTEM_PROMPT = """You identify named fictional characters for NovelAI Diffusion V5.
 Return exactly one JSON object and no Markdown:
-{"characters":[{"source_name":"name as written in the request","work":"English work name or empty","role":"visible_subject|outfit_source|appearance_source|cosplay_identity|reference_subject","candidate_tags":["romanized name (work)"],"appearance":"comma-separated stable visual identity tags"}],"references":[{"source_name":"term exactly as written","work":"work title or empty","type":"technique_reference|scene_reference|composition_reference|art_direction_reference|location_reference|prop_reference","search_query":"localized term work title visual scene"}]}
+{"characters":[{"source_name":"name as written in the request","work":"English work name or empty","role":"visible_subject|outfit_source|appearance_source|cosplay_identity|reference_subject","subject_type":"girl|boy|other","candidate_tags":["romanized name (work)"],"appearance":"comma-separated stable anatomy and appearance tags"}],"references":[{"source_name":"term exactly as written","work":"work title or empty","type":"technique_reference|scene_reference|composition_reference|art_direction_reference|location_reference|prop_reference","search_query":"localized term work title visual scene"}]}
 Rules:
 - Include only explicitly named fictional characters or a clearly depicted reference-image subject.
 - A named technique, attack, famous scene, composition, visual style, location, weapon, prop, transformation, or story event is a reference, never a character.
@@ -26,7 +26,8 @@ Rules:
 - Give up to four plausible NovelAI/Danbooru-style candidate tags, strongest first.
 - Use official English names or established romanizations. Never translate the meaning of a name into a generic English word.
 - Classify a character named only as another character's outfit, appearance, or cosplay source as outfit_source, appearance_source, or cosplay_identity. Such a source is not an additional visible person.
-- For a named character, appearance must preserve distinctive hair, eyes, anatomy, signature accessories, and other stable identity traits; do not include pose, scene, camera, temporary clothing, artist tags, or quality tags.
+- For an established named character, subject_type identifies their canonical depicted body type; do not leave a known female or male character as other merely because the user omitted gender words.
+- For a named character, appearance must preserve distinctive hair, eyes, anatomy, signature accessories, and other stable identity traits. Never include dresses, uniforms, shirts, coats, footwear, or any other clothing; clothing is request-specific and planned later. Do not include pose, scene, camera, artist tags, or quality tags.
 - If an attached image has NovelAI metadata, treat metadata identity as more reliable than visual guessing.
 - Ignore protected tokens matching __NAI_CHARACTER_SLOT_<number>__ because the plugin already resolved them.
 - Use an empty characters list when there is no resolvable character.
@@ -399,6 +400,9 @@ async def plan_identities(
         role = str(item.get("role") or "visible_subject").strip().casefold()
         if role not in IDENTITY_ROLES:
             role = "visible_subject"
+        subject_type = str(item.get("subject_type") or "other").strip().casefold()
+        if subject_type not in {"girl", "boy", "other"}:
+            subject_type = "other"
         appearance = str(item.get("appearance") or "").strip(" ,")
         raw_candidates = item.get("candidate_tags", [])
         candidates = (
@@ -431,9 +435,21 @@ async def plan_identities(
                 resolution = await resolver.resolve(source_name, repaired_candidates)
                 candidates = repaired_candidates
         identity_tag = resolution.canonical_tag or resolution.candidate or source_name
-        immutable_prompt = ", ".join(
-            value for value in (identity_tag.strip(" ,"), appearance) if value
-        )
+        appearance_items = [
+            value.strip() for value in appearance.split(",") if value.strip()
+        ]
+        if any(
+            re.fullmatch(r"(?i)(?:1\s*)?(?:girl|boy|other)", value)
+            for value in appearance_items
+        ):
+            identity_parts = (identity_tag.strip(" ,"), *appearance_items)
+        else:
+            identity_parts = (
+                subject_type,
+                identity_tag.strip(" ,"),
+                *appearance_items,
+            )
+        immutable_prompt = ", ".join(value for value in identity_parts if value)
         if immutable_prompt:
             identities.append(
                 PlannedIdentity(

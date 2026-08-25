@@ -815,6 +815,56 @@ def test_character_subject_counts_come_from_saved_prompts() -> None:
     assert result == "1girl, 1boy, hugging, outdoors, spring"
 
 
+def test_single_character_count_replaces_generic_one_person() -> None:
+    """Prevent one protected character from becoming 1girl plus 1person."""
+    result = MODULE.NovelAIWebPlugin._apply_character_subject_counts(
+        "1person, nude, full body, simple background",
+        ("girl, cartethyia (wuthering waves), blonde hair",),
+    )
+
+    assert result == "1girl, nude, full body, simple background"
+
+
+def test_explicit_nudity_removes_identity_and_planner_clothing() -> None:
+    """Let explicit request clothing state override identity outfit leakage."""
+    character_prompts = MODULE.NovelAIWebPlugin._build_character_prompts(
+        [
+            (
+                "__NAI_CHARACTER_SLOT_1__",
+                "卡提希娅",
+                "girl, cartethyia (wuthering waves), blonde hair, white dress",
+                "",
+            )
+        ],
+        {
+            "__NAI_CHARACTER_SLOT_1__": (
+                "standing, flowing robe, relaxed pose, looking at viewer"
+            )
+        },
+        4000,
+        explicit_nudity=True,
+    )
+
+    assert character_prompts == (
+        "girl, cartethyia (wuthering waves), blonde hair, nude, standing, relaxed pose, looking at viewer",
+    )
+
+
+def test_explicit_nudity_is_a_semantic_anchor() -> None:
+    """Retry a planner response that silently replaces nudity with clothing."""
+    errors = MODULE.NovelAIWebPlugin._semantic_plan_errors(
+        "裸体的__NAI_CHARACTER_SLOT_1__",
+        {
+            "prompt": "1person, full body, white background",
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": "white dress, standing"
+            },
+        },
+    )
+
+    assert errors == ["缺少 nude"]
+
+
 @pytest.mark.asyncio
 async def test_character_generation_uses_native_captions() -> None:
     """Route matched library characters into native V4 captions."""
