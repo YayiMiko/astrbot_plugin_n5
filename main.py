@@ -56,10 +56,6 @@ CHIBI_SOURCE_PATTERN = re.compile(
     r"(?:Q版|Ｑ版|q版|chibi|super[\s_-]*deformed)",
     re.IGNORECASE,
 )
-MINIMAL_SOURCE_PATTERN = re.compile(
-    r"(?:极简|原样|不要补充|不要扩写|不加细节|minimal|as[- ]is|no expansion)",
-    re.IGNORECASE,
-)
 CHARACTER_SLOT_PATTERN = re.compile(
     r"__NAI_CHARACTER_SLOT_\d+__",
     re.IGNORECASE,
@@ -770,25 +766,6 @@ class NovelAIWebPlugin(star.Star):
                     re.I,
                 ):
                     errors.append("被动人物缺少倒地姿态")
-        character_slots = list(
-            dict.fromkeys(CHARACTER_SLOT_PATTERN.findall(description))
-        )
-        if (
-            character_slots
-            and not CHIBI_SOURCE_PATTERN.search(description)
-            and not MINIMAL_SOURCE_PATTERN.search(description)
-            and CREATIVE_REFERENCE_BEGIN not in description
-        ):
-            minimum_items = 10 if len(character_slots) == 1 else 7
-            for slot in character_slots:
-                dynamic_prompt = plan["character_prompts"].get(slot, "")
-                item_count = len(
-                    [item for item in dynamic_prompt.split(",") if item.strip()]
-                )
-                if item_count < minimum_items:
-                    errors.append(
-                        f"{slot} 人物设计过于简略（{item_count}/{minimum_items}）"
-                    )
         if not PAINTER_SUBJECT_PATTERN.search(description) and re.search(
             r"(?i)(?<![a-z])(?:painter|paintbrush|canvas \(object\)|easel)(?![a-z])",
             combined_prompt,
