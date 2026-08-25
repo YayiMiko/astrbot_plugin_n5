@@ -26,7 +26,7 @@
 - “速度感”：`dynamic pose, motion blur, wind, flowing clothes, dutch angle`。
 - “孤独”：`solo, wide shot, negative space, distant background, muted colors`。
 
-这些是候选映射，不是固定套餐。每次选择 2–4 个真正支持用户意图的信号。
+这些是候选映射，不是固定套餐。只选择真正支持用户意图的信号，数量由场面语义决定。
 
 ## 3. 景别与视角
 

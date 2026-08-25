@@ -38,17 +38,12 @@ two adults, back-to-back, one looking left and the other looking right
 
 ## 4. 质量词
 
-默认使用一个短基线：
+NovelAI 的 Add Quality Tags 是模型专用功能，而且添加内容可以不显示在用户编辑的 Prompt 中。因此：
 
-```text
-high complexity, depthness, masterpiece, no text
-```
-
-规则：
-
+- `quality_toggle` 开启时，不再手写叠加一整套质量词。
+- `quality_toggle` 关闭时，可根据用户题材使用少量具体媒介或审美表达，但没有固定基线。
 - 不同时叠加多套 `masterpiece / amazing quality / highres / ultra detailed` 变体。
-- 特定媒介或画面风格属于视觉规划，不应伪装成“质量词”。
-- 用户要求原始标签、极简 Prompt 或特定风格测试时，可以完全省略质量基线。
+- 用户要求原始标签、极简 Prompt 或特定风格测试时，可以完全省略质量表达。
 - 插件会独立拼接画师串；这里不加入画师、年份或合作抑制标签。
 
 ## 5. Undesired Content
@@ -75,9 +70,11 @@ lowres, blurry, bad anatomy, bad hands, extra digits, missing fingers, text, sig
 
 用户明确要求冲突效果时，保留要求并用可实现的构图解释，例如 `split screen`、`reflection` 或 `double exposure`，不要静默删除。
 
-## 7. 资料范围
+## 7. 资料优先级
 
-本规则由用户提供的三份 2026-05-20 版个人法典整理而来：
+模型行为以 `knowledge/official-rules.json` 为准，并通过 `knowledge/source-manifest.json` 追溯 NovelAI 官方文档。下列个人法典只是历史语法与范例来源，属于低优先级经验；与当前 V5 官方规则、用户本次明确要求或运行协议冲突时必须舍弃。
+
+历史参考包括：
 
 - `所长常规NovelAI个人法典（2026.5.20版，一般所长整理）.docx`
 - `所长色色NovalAI个人法典（上）（2026.5.20版，一般所长整理）.docx`
