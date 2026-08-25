@@ -2,10 +2,12 @@
 
 import asyncio
 import importlib.util
+import json
 import sys
 import zipfile
 from io import BytesIO
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
@@ -13,6 +15,9 @@ from PIL import Image
 
 PLUGIN_PATH = Path(__file__).resolve().parents[1] / "main.py"
 sys.path.insert(0, str(PLUGIN_PATH.parent))
+
+from identity_planner import PlannedIdentity, identity_alias_key  # noqa: E402
+
 SPEC = importlib.util.spec_from_file_location("novelai_plugin_under_test", PLUGIN_PATH)
 assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
@@ -146,7 +151,7 @@ def build_plugin(
         return_value=MODULE.RequestImageContext((), "", ""),
     )
     plugin._resolve_planned_character_slots = AsyncMock(
-        side_effect=lambda description, replacements, _image_context: (
+        side_effect=lambda _event, description, replacements, _image_context: (
             description,
             replacements,
             [],
@@ -309,6 +314,64 @@ async def test_empty_n5_command_returns_copyable_examples() -> None:
             "发送 /n5 help 查看完整帮助。",
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_outfit_source_is_verified_without_adding_a_visible_character(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Keep a named wardrobe source out of native visible-character slots."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "max_characters_per_prompt": 4,
+    }
+    plugin.context = SimpleNamespace()
+    plugin._identity_alias_lock = asyncio.Lock()
+    plugin._get_api_client = Mock()
+    cache_path = tmp_path / "identity_aliases.json"
+    monkeypatch.setattr(
+        MODULE.NovelAIWebPlugin,
+        "_identity_alias_state_path",
+        staticmethod(lambda: cache_path),
+    )
+
+    async def fake_plan_identities(*args, **kwargs):
+        assert kwargs["event"] is event
+        return [
+            PlannedIdentity(
+                source_name="卡缇希娅",
+                work="Wuthering Waves",
+                role="outfit_source",
+                immutable_prompt=(
+                    "cartethyia (wuthering waves), girl, long blonde hair"
+                ),
+                verified=True,
+                canonical_tag="cartethyia (wuthering waves)",
+            )
+        ]
+
+    monkeypatch.setattr(MODULE, "plan_identities", fake_plan_identities)
+    event = FakeEvent()
+
+    description, replacements, warnings = (
+        await plugin._resolve_planned_character_slots(
+            event,
+            "阿米娅穿着卡缇希娅的衣服",
+            [],
+            MODULE.RequestImageContext((), "", ""),
+        )
+    )
+
+    assert replacements == []
+    assert warnings == []
+    assert "cartethyia (wuthering waves)" in description
+    assert "not an additional visible character" in description
+    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+    assert cache["aliases"][
+        identity_alias_key("卡缇希娅", "Wuthering Waves")
+    ] == "cartethyia (wuthering waves)"
 
 
 @pytest.mark.asyncio

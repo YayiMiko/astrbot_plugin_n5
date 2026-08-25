@@ -27,11 +27,11 @@ from astrbot.api.event.filter import EventMessageType
 from astrbot.core.star.filter.command import GreedyStr
 
 try:
-    from .identity_planner import plan_identities
+    from .identity_planner import identity_alias_key, plan_identities
     from .image_context import RequestImageContext, resolve_request_images
     from .novelai_tags import NovelAITagResolver
 except ImportError:
-    from identity_planner import plan_identities
+    from identity_planner import identity_alias_key, plan_identities
     from image_context import RequestImageContext, resolve_request_images
     from novelai_tags import NovelAITagResolver
 
@@ -275,6 +275,7 @@ class NovelAIWebPlugin(star.Star):
         self._generation_queue_size = 0
         self._artist_state_lock = asyncio.Lock()
         self._character_state_lock = asyncio.Lock()
+        self._identity_alias_lock = asyncio.Lock()
         self._bug_report_lock = asyncio.Lock()
         self._pending_character_changes: dict[
             tuple[str, str], PendingCharacterChange
@@ -494,6 +495,58 @@ class NovelAIWebPlugin(star.Star):
     def _bug_report_state_path() -> Path:
         """Return the persistent user bug report state path."""
         return star.StarTools.get_data_dir(PLUGIN_NAME) / "bug_reports.json"
+
+    @staticmethod
+    def _identity_alias_state_path() -> Path:
+        """Return the verified localized-name cache path."""
+        return star.StarTools.get_data_dir(PLUGIN_NAME) / "identity_aliases.json"
+
+    @classmethod
+    def _load_verified_identity_aliases(cls) -> dict[str, str]:
+        """Load only aliases previously confirmed by NovelAI.
+
+        Returns:
+            Mapping from normalized localized identity keys to canonical tags.
+        """
+        state_path = cls._identity_alias_state_path()
+        if not state_path.is_file():
+            return {}
+        try:
+            payload = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning("[n5] verified identity cache could not be read: %s", exc)
+            return {}
+        raw_aliases = payload.get("aliases", {}) if isinstance(payload, dict) else {}
+        if not isinstance(raw_aliases, dict):
+            return {}
+        return {
+            str(key): str(value).strip(" ,")
+            for key, value in raw_aliases.items()
+            if isinstance(key, str) and isinstance(value, str) and value.strip(" ,")
+        }
+
+    @classmethod
+    def _save_verified_identity_aliases(cls, aliases: dict[str, str]) -> None:
+        """Atomically persist aliases confirmed by NovelAI.
+
+        Args:
+            aliases: Verified normalized identity mappings.
+        """
+        state_path = cls._identity_alias_state_path()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = state_path.with_suffix(".json.tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(
+                    {"version": 1, "aliases": aliases},
+                    ensure_ascii=False,
+                    indent=2,
+                ),
+                encoding="utf-8",
+            )
+            temporary_path.replace(state_path)
+        except OSError as exc:
+            logger.warning("[n5] verified identity cache could not be saved: %s", exc)
 
     @staticmethod
     def _load_prompt_planner_system_prompt() -> str:
@@ -1635,6 +1688,7 @@ class NovelAIWebPlugin(star.Star):
 
     async def _resolve_planned_character_slots(
         self,
+        event: AstrMessageEvent,
         description: str,
         replacements: list[tuple[str, str, str, str]],
         image_context: RequestImageContext,
@@ -1642,6 +1696,7 @@ class NovelAIWebPlugin(star.Star):
         """Add DS4F-planned characters as protected native V5 captions.
 
         Args:
+            event: Current event used for native web-search permissions.
             description: Description after saved-character replacement.
             replacements: Existing protected character entries.
             image_context: Request-scoped multimodal context.
@@ -1660,6 +1715,8 @@ class NovelAIWebPlugin(star.Star):
         ).strip()
         if not provider_id:
             raise NovelAIWebError("prompt_planner_provider_id 不能为空。")
+        async with self._identity_alias_lock:
+            verified_aliases = self._load_verified_identity_aliases()
         try:
             identities = await plan_identities(
                 self.context,
@@ -1672,24 +1729,54 @@ class NovelAIWebPlugin(star.Star):
                     NOVELAI_API_BASE_URL,
                     NOVELAI_MODEL,
                 ),
+                event=event,
+                verified_aliases=verified_aliases,
             )
         except (json.JSONDecodeError, TypeError, ValueError) as exc:
             raise NovelAIWebError("角色识别模型没有返回有效协议。") from exc
         except Exception as exc:
             raise NovelAIWebError("DS4F Vision 角色识别失败，请稍后再试。") from exc
 
+        learned_aliases = {
+            identity_alias_key(
+                identity.source_name, identity.work
+            ): identity.canonical_tag
+            for identity in identities
+            if identity.verified and identity.canonical_tag
+        }
+        if any(
+            verified_aliases.get(key) != value for key, value in learned_aliases.items()
+        ):
+            async with self._identity_alias_lock:
+                latest_aliases = self._load_verified_identity_aliases()
+                latest_aliases.update(learned_aliases)
+                self._save_verified_identity_aliases(latest_aliases)
+
         try:
             max_slots = int(self.config.get("max_characters_per_prompt", 4))
         except (TypeError, ValueError) as exc:
             raise NovelAIWebError("max_characters_per_prompt 必须是整数。") from exc
-        available = max(0, min(max_slots, 6) - len(replacements))
         warnings: list[str] = []
         seen_names: set[str] = set()
-        for identity in identities[:available]:
+        for identity in identities:
             normalized_name = identity.source_name.casefold()
             if normalized_name in seen_names:
                 continue
             seen_names.add(normalized_name)
+            if identity.role not in {"visible_subject", "reference_subject"}:
+                source_label = identity.canonical_tag or identity.source_name
+                role_label = identity.role.replace("_", " ")
+                description = re.sub(
+                    re.escape(identity.source_name),
+                    f"{source_label} [{role_label} only; not an additional visible character]",
+                    description,
+                    flags=re.IGNORECASE,
+                )
+                if not identity.verified:
+                    warnings.append(identity.source_name)
+                continue
+            if len(replacements) >= max(0, min(max_slots, 6)):
+                continue
             slot = f"__NAI_CHARACTER_SLOT_{len(replacements) + 1}__"
             name_pattern = re.compile(re.escape(identity.source_name), re.IGNORECASE)
             matches = list(name_pattern.finditer(description))
@@ -2887,6 +2974,7 @@ class NovelAIWebPlugin(star.Star):
                     character_replacements,
                     unresolved_identities,
                 ) = await self._resolve_planned_character_slots(
+                    event,
                     prompt_text,
                     character_replacements,
                     image_context,

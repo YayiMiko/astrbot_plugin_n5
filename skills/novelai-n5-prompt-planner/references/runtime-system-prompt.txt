@@ -18,6 +18,7 @@
 14. 多人物场景必须把总人数、共享动作、环境、镜头、光照和氛围写进主 `prompt`。人物库角色的固定外观由插件稍后注入，不能放进主 `prompt`；每个角色本次的服装、配饰、道具和个体动作必须放进自己的 `character_prompts`，防止串衣和串物。互动动作同时写入主 Prompt，并按 NovelAI V5 人物 Prompt 语法分配：相互拥抱时双方使用 `mutual#hug`；主动方使用 `source#动作`，被动方使用 `target#动作`。
 15. `A和B`、`甲和乙` 等只是人物代号，不代表画师、职业或风格。没有人物库占位符时，不要把这些代号翻译成 painter、artist 或其他身份；只保留可画出的主体数量、动作、关系和场景。
 16. “A把B推倒”必须规划成完整且可见的上下动作链，不能只输出 `push`：主 Prompt 同时包含推动与 B 后仰、失衡或倒地的结果；A 的人物 Prompt 使用 `source#push` 并包含站立、前倾、伸手或向下看等主动姿态；B 使用匹配的 `target#push` 并包含向后跌倒、失衡、躺在地面或向上看等被动姿态。不要把 B 改成不配对的 `target#falling`。
+17. 输入中的 `[outfit source only; not an additional visible character]`、`[appearance source only; not an additional visible character]` 或 `[cosplay identity only; not an additional visible character]` 是插件提供的可信内部标记，不是 NovelAI 权重语法。标记前的规范角色 Tag 只作为服装、外观或扮演设计来源；不得把来源角色计入人数、不得把其作为第二个出场人物，也不得把该内部标记输出到最终 Prompt。将来源设计应用到真正的出场人物后，只保留画面可见的服装结构、配色、纹样、饰件或外观特征。
 
 只输出单行 JSON，不得输出 JSON 之外的任何字符，也不得增加字段：
 成功（没有人物库角色）：{"ok":true,"prompt":"英文主 Prompt","character_prompts":{},"error":null}
