@@ -116,7 +116,7 @@ async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
                 candidates[0],
             )
 
-    identities = await plan_identities(
+    identities, references = await plan_identities(
         FakeContext(),
         "deepseek/deepseek-v4-flash-vision-exp",
         "莫宁站在雪夜车站",
@@ -125,6 +125,7 @@ async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
         FakeResolver(),
     )
 
+    assert references == []
     assert identities[0].verified is True
     assert identities[0].immutable_prompt == (
         "mornye (wuthering waves), girl, silver hair, blue eyes"
@@ -207,7 +208,7 @@ async def test_identity_planner_repairs_failed_romanization_with_web_evidence() 
             return TagResolution(source_name, None, candidates[0])
 
     resolver = FakeResolver()
-    identities = await plan_identities(
+    identities, references = await plan_identities(
         FakeContext(),
         "deepseek/deepseek-v4-flash-vision-exp",
         "明日方舟角色阿米娅穿着鸣潮角色卡缇希娅的衣服",
@@ -217,6 +218,7 @@ async def test_identity_planner_repairs_failed_romanization_with_web_evidence() 
         event=SimpleNamespace(),
     )
 
+    assert references == []
     assert len(resolver.calls) == 2
     assert identities[0].verified is True
     assert identities[0].role == "outfit_source"
@@ -253,7 +255,7 @@ async def test_verified_alias_cache_skips_network_repair() -> None:
             raise AssertionError("verified cache should skip official lookup")
 
     canonical = "cartethyia (wuthering waves)"
-    identities = await plan_identities(
+    identities, references = await plan_identities(
         FakeContext(),
         "deepseek/deepseek-v4-flash-vision-exp",
         "卡缇希娅",
@@ -265,5 +267,104 @@ async def test_verified_alias_cache_skips_network_repair() -> None:
         },
     )
 
+    assert references == []
     assert identities[0].verified is True
     assert identities[0].canonical_tag == canonical
+
+
+@pytest.mark.asyncio
+async def test_creative_reference_is_researched_without_nai_character_lookup() -> None:
+    """Route a famous technique to a visual blueprint instead of identity lookup."""
+
+    class FakeToolSet:
+        @staticmethod
+        def get_tool(name: str):
+            assert name == "web_search_tavily"
+            return SimpleNamespace(name=name, active=True)
+
+    class FakeToolManager:
+        @staticmethod
+        def get_full_tool_set():
+            return FakeToolSet()
+
+    class FakeContext:
+        @staticmethod
+        async def llm_generate(**kwargs):
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "characters": [
+                            {
+                                "source_name": "卡提希娅",
+                                "work": "Wuthering Waves",
+                                "role": "visible_subject",
+                                "candidate_tags": ["cartethyia (wuthering waves)"],
+                                "appearance": "girl, long blonde hair",
+                            },
+                            {
+                                "source_name": "虚式茈",
+                                "work": "Jujutsu Kaisen",
+                                "role": "visible_subject",
+                                "candidate_tags": ["hollow purple"],
+                                "appearance": "purple energy",
+                            },
+                        ],
+                        "references": [
+                            {
+                                "source_name": "虚式茈",
+                                "work": "咒术回战",
+                                "type": "technique_reference",
+                                "search_query": "虚式茈 咒术回战 Hollow Purple visual",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        @staticmethod
+        def get_llm_tool_manager():
+            return FakeToolManager()
+
+        @staticmethod
+        async def tool_loop_agent(**kwargs):
+            assert "虚式茈" in kwargs["prompt"]
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "canonical_name": "Hollow Purple",
+                        "work_en": "Jujutsu Kaisen",
+                        "visual_blueprint": (
+                            "The subject releases a fused violet sphere along a destructive corridor."
+                        ),
+                        "anchor_tags": ["purple energy", "energy sphere"],
+                        "exclude_subjects": ["Satoru Gojo"],
+                    }
+                )
+            )
+
+    class FakeResolver:
+        def __init__(self) -> None:
+            self.sources: list[str] = []
+
+        async def resolve(self, source_name: str, candidates: list[str]):
+            from novelai_tags import TagResolution
+
+            self.sources.append(source_name)
+            return TagResolution(source_name, candidates[0], candidates[0])
+
+    resolver = FakeResolver()
+    identities, references = await plan_identities(
+        FakeContext(),
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "让卡提希娅打出虚式茈",
+        (),
+        "",
+        resolver,
+        event=SimpleNamespace(),
+    )
+
+    assert resolver.sources == ["卡提希娅"]
+    assert identities[0].canonical_tag == "cartethyia (wuthering waves)"
+    assert references[0].canonical_name == "Hollow Purple"
+    assert references[0].exclude_subjects == ("Satoru Gojo",)
