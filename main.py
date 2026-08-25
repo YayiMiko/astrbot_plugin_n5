@@ -99,6 +99,18 @@ NOVELAI_ASCII_TAG_PATTERN = re.compile(
     r"[a-z0-9][a-z0-9 _.:+\-'/()\\]*",
     re.IGNORECASE,
 )
+NATURAL_LANGUAGE_SCRIPT_PATTERN = re.compile(
+    r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]"
+)
+NOVELAI_CHARACTER_TAG_PATTERN = re.compile(
+    r"(?<![a-z0-9_])[a-z0-9][a-z0-9_']+_\([a-z0-9][a-z0-9 _.'-]*\)(?![a-z0-9_])",
+    re.IGNORECASE,
+)
+EXPLICIT_SUBJECT_COUNT_PATTERN = re.compile(
+    r"(?<![a-z0-9_])\d+\s*(?:girls?|boys?|women|men|others?|people|persons?|characters?)"
+    r"(?![a-z0-9_])",
+    re.IGNORECASE,
+)
 PROMPT_PLANNER_SYSTEM_PROMPT_PATHS = (
     (
         Path(__file__).resolve().parent
@@ -3452,14 +3464,22 @@ class NovelAIWebPlugin(star.Star):
             return
         prompt_text = arguments
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
-        is_direct_prompt = subcommand == "原始" or bool(
-            NOVELAI_PROMPT_SIGNAL_PATTERN.search(prompt_text)
-        )
-        if not is_direct_prompt and len(prompt_parts) >= 2:
-            is_direct_prompt = all(
-                len(part) <= 120 and NOVELAI_ASCII_TAG_PATTERN.fullmatch(part)
-                for part in prompt_parts
-            )
+        is_direct_prompt = subcommand == "原始"
+        if not is_direct_prompt and not NATURAL_LANGUAGE_SCRIPT_PATTERN.search(
+            prompt_text
+        ):
+            is_direct_prompt = bool(NOVELAI_PROMPT_SIGNAL_PATTERN.search(prompt_text))
+            if not is_direct_prompt and len(prompt_parts) >= 2:
+                is_direct_prompt = all(
+                    len(part) <= 120 and NOVELAI_ASCII_TAG_PATTERN.fullmatch(part)
+                    for part in prompt_parts
+                )
+            if (
+                is_direct_prompt
+                and NOVELAI_CHARACTER_TAG_PATTERN.search(prompt_text)
+                and not EXPLICIT_SUBJECT_COUNT_PATTERN.search(prompt_text)
+            ):
+                is_direct_prompt = False
 
         try:
             self._check_access(event)

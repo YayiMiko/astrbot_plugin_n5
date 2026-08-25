@@ -293,6 +293,100 @@ async def test_natural_language_still_uses_planner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None:
+    """Plan mixed character tags and natural language instead of leaking raw text."""
+    plugin = build_plugin()
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "blaze_the_igniting_spark_(arknights)",
+            "girl, blaze the igniting spark (arknights), black hair, animal ears",
+            "",
+        )
+    ]
+    plugin._resolve_planned_character_slots = AsyncMock(
+        return_value=(
+            "__NAI_CHARACTER_SLOT_1__坐在水边",
+            replacements,
+            [],
+            "",
+        )
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": "1person, sitting, waterside",
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": "sitting, looking at viewer"
+            },
+        }
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "生成 blaze_the_igniting_spark_(arknights)坐在水边",
+        )
+    ]
+
+    plugin._resolve_planned_character_slots.assert_awaited_once()
+    plugin._plan_prompt.assert_awaited_once()
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, 1girl, solo, sitting, waterside",
+        (832, 1216),
+        (
+            "girl, blaze the igniting spark (arknights), black hair, animal ears, "
+            "sitting, looking at viewer",
+        ),
+        "multiple girls, multiple boys, multiple views, character sheet, lineup, duplicate",
+        ("",),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_character_tag_without_count_uses_identity_planning() -> None:
+    """Resolve one bare official character tag before generating it."""
+    plugin = build_plugin("1girl, solo, sitting")
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "生成 blaze_the_igniting_spark_(arknights), sitting",
+        )
+    ]
+
+    plugin._resolve_planned_character_slots.assert_awaited_once()
+    plugin._plan_prompt.assert_awaited_once()
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_explicit_raw_character_tag_still_skips_planning() -> None:
+    """Keep the explicit raw mode untouched for advanced users."""
+    plugin = build_plugin()
+    prompt = "blaze_the_igniting_spark_(arknights)坐在水边"
+
+    results = [
+        result async for result in plugin.generate_image(FakeEvent(), f"原始 {prompt}")
+    ]
+
+    plugin._resolve_planned_character_slots.assert_not_awaited()
+    plugin._plan_prompt.assert_not_awaited()
+    plugin._generate_from_api.assert_awaited_once_with(
+        f"nsfw, {prompt}",
+        (832, 1216),
+        (),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
 async def test_api_failure_only_returns_error() -> None:
     """Return one explicit error and no image when API generation fails."""
     plugin = build_plugin()
