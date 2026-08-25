@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "priority": "Local preferences apply only after explicit user intent and model-specific official rules.",
+  "preferences": [
+    {
+      "id": "explicit-intent-wins",
+      "enforcement": "deterministic",
+      "instruction": "Explicit current-request constraints override identity defaults, inferred clothing, and aesthetic completion. Preserve identity traits that do not conflict."
+    },
+    {
+      "id": "artist-string-external",
+      "enforcement": "deterministic",
+      "instruction": "Artist strings are managed by the plugin and must not be generated, removed, or rewritten by the prompt planner."
+    },
+    {
+      "id": "unlocated-character-display",
+      "enforcement": "soft",
+      "instruction": "When the user names a character but gives no environment, prefer a clean character-display composition with simple background or white background instead of inventing a complex location."
+    },
+    {
+      "id": "creative-reference-adaptation",
+      "enforcement": "llm",
+      "instruction": "Adapt researched techniques and famous-scene visual language to the actual requested subject; do not add the source performer unless requested."
+    },
+    {
+      "id": "nsfw-alias-normalization",
+      "enforcement": "deterministic",
+      "instruction": "Treat NSFW as a compatibility alias for explicit content intent. Compile it into a supported rating directive and concrete requested visual terms instead of relying on the literal nsfw token."
+    }
+  ]
+}

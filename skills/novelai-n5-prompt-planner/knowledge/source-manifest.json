@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "retrieved_at": "2026-08-25",
+  "sources": [
+    {
+      "id": "official-v5-release",
+      "title": "Image Generation: NovelAI Diffusion V5 is here",
+      "url": "https://journal.novelai.net/image-generation-novelai-diffusion-v5-is-here-c2df7c6b8d2d/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-prompt-basics",
+      "title": "Image Generation Basics and Prompt Basics",
+      "url": "https://docs.novelai.net/en/image/basics/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-character-creation",
+      "title": "Creating Consistent Characters",
+      "url": "https://docs.novelai.net/en/image/tutorial-charactercreation/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-multiple-characters",
+      "title": "Multi-Character Prompting",
+      "url": "https://docs.novelai.net/en/image/multiplecharacters/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-quality-tags",
+      "title": "Add Quality Tags Toggle",
+      "url": "https://docs.novelai.net/en/image/qualitytags/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-undesired-content",
+      "title": "Undesired Content",
+      "url": "https://docs.novelai.net/en/image/undesiredcontent/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-weighting",
+      "title": "Strengthening and Weakening Vectors",
+      "url": "https://docs.novelai.net/en/image/strengthening-weakening/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-guidance",
+      "title": "Steps and Prompt Guidance",
+      "url": "https://docs.novelai.net/en/image/stepsguidance/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    }
+  ]
+}

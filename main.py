@@ -91,74 +91,6 @@ NOVELAI_ASCII_TAG_PATTERN = re.compile(
     r"[a-z0-9][a-z0-9 _.:+\-'/()\\]*",
     re.IGNORECASE,
 )
-PAINTER_SUBJECT_PATTERN = re.compile(
-    r"(?:画师|画家(?!帽)|(?<![\w:])painter\b)",
-    re.IGNORECASE,
-)
-PAINTER_STYLE_PATTERN = re.compile(
-    r"(?:画师串|画师风格|画家风格|画风|artist\s*:|art\s+style|"
-    r"in\s+the\s+style\s+of)",
-    re.IGNORECASE,
-)
-PAINTER_NEGATION_PATTERN = re.compile(
-    r"(?:不(?:要|在|是|拿|带)?(?:画画|绘画|作画|画笔|画具)|"
-    r"没有(?:画具|画笔)|空手|下班|not\s+painting|"
-    r"without\s+(?:art|paint)(?:ing)?\s+supplies|empty[- ]handed)",
-    re.IGNORECASE,
-)
-PAINTER_VISUAL_ANCHOR_GROUPS = (
-    ("painter", ("painter",)),
-    (
-        "drawing (action)",
-        ("drawing", "drawing (action)", "painting", "painting (action)"),
-    ),
-    (
-        "holding paintbrush",
-        ("holding paintbrush", "paintbrush", "holding brush"),
-    ),
-    ("canvas (object)", ("canvas", "canvas (object)")),
-    ("easel", ("easel",)),
-)
-SEMANTIC_ANCHOR_RULES = (
-    (
-        "2girls",
-        re.compile(
-            r"(?:两个|两名|二个|2\s*个|2\s*名)\s*(?:女孩子|女孩|女生|少女)|\b2\s*girls?\b",
-            re.IGNORECASE,
-        ),
-        re.compile(r"\b(?:2girls|two girls)\b", re.IGNORECASE),
-    ),
-    (
-        "hugging",
-        re.compile(r"抱在一起|互相拥抱|相拥|拥抱|\bhugg?(?:ing|ed)?\b", re.IGNORECASE),
-        re.compile(
-            r"(?<![a-z])(?:mutual#|source#|target#)?hug(?:ging)?(?![a-z])|\bembrac",
-            re.IGNORECASE,
-        ),
-    ),
-    (
-        "spring",
-        re.compile(r"春光|春日|春天|春季|\bspring\b", re.IGNORECASE),
-        re.compile(r"\bspring\b", re.IGNORECASE),
-    ),
-    (
-        "eating ice cream",
-        re.compile(
-            r"(?:吃|舔)\s*(?:着|了|一个)?\s*冰(?:激凌|淇淋)|ice cream", re.IGNORECASE
-        ),
-        re.compile(r"ice cream", re.IGNORECASE),
-    ),
-    (
-        "exhausted",
-        re.compile(r"疲惫|疲倦|筋疲力尽|燃尽了|burned? out|exhausted", re.IGNORECASE),
-        re.compile(r"exhausted|tired|fatigue|burned? out", re.IGNORECASE),
-    ),
-    (
-        "nude",
-        EXPLICIT_NUDITY_SOURCE_PATTERN,
-        re.compile(r"(?<![a-z])(?:nude|naked)(?![a-z])", re.IGNORECASE),
-    ),
-)
 PROMPT_PLANNER_SYSTEM_PROMPT_PATHS = (
     (
         Path(__file__).resolve().parent
@@ -175,6 +107,15 @@ PROMPT_PLANNER_SYSTEM_PROMPT_PATHS = (
         / "runtime-semantic-expansion.txt"
     ),
 )
+PROMPT_KNOWLEDGE_DIR = (
+    Path(__file__).resolve().parent
+    / "skills"
+    / "novelai-n5-prompt-planner"
+    / "knowledge"
+)
+OFFICIAL_RULES_PATH = PROMPT_KNOWLEDGE_DIR / "official-rules.json"
+OFFICIAL_SOURCE_MANIFEST_PATH = PROMPT_KNOWLEDGE_DIR / "source-manifest.json"
+LOCAL_PREFERENCES_PATH = PROMPT_KNOWLEDGE_DIR / "local-preferences.json"
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF")
 DEFAULT_GENERATION_SIZE = (832, 1216)
 GENERATION_SIZE_PRESETS = {
@@ -564,9 +505,79 @@ class NovelAIWebPlugin(star.Star):
 
     @staticmethod
     def _load_prompt_planner_system_prompt() -> str:
-        """Load the runtime contract and semantic expansion instructions."""
+        """Load official rules, local preferences, and runtime instructions.
+
+        Returns:
+            Complete versioned system prompt for NovelAI V5 planning.
+
+        Raises:
+            NovelAIWebError: If a knowledge file is missing or inconsistent.
+        """
         sections: list[str] = []
         try:
+            source_manifest = json.loads(
+                OFFICIAL_SOURCE_MANIFEST_PATH.read_text(encoding="utf-8")
+            )
+            official_rules = json.loads(OFFICIAL_RULES_PATH.read_text(encoding="utf-8"))
+            local_preferences = json.loads(
+                LOCAL_PREFERENCES_PATH.read_text(encoding="utf-8")
+            )
+            if official_rules.get("model") != NOVELAI_MODEL:
+                raise NovelAIWebError("NovelAI 官方规则库与当前生图模型不匹配。")
+            raw_sources = source_manifest.get("sources", [])
+            source_ids = {
+                str(item.get("id") or "")
+                for item in raw_sources
+                if isinstance(item, dict) and item.get("authority") == "official"
+            }
+            raw_rules = official_rules.get("rules", [])
+            if not isinstance(raw_rules, list) or not raw_rules:
+                raise NovelAIWebError("NovelAI 官方规则库为空。")
+            official_lines = [
+                "NovelAI V5 官方规则库（模型专用事实层；规则 ID 用于追溯，不得输出）："
+            ]
+            for item in raw_rules:
+                if not isinstance(item, dict):
+                    raise NovelAIWebError("NovelAI 官方规则库包含无效记录。")
+                rule_id = str(item.get("id") or "").strip()
+                enforcement = str(item.get("enforcement") or "").strip()
+                instruction = str(item.get("instruction") or "").strip()
+                rule_sources = item.get("sources", [])
+                if (
+                    not rule_id
+                    or enforcement not in {"deterministic", "llm", "soft"}
+                    or not instruction
+                    or not isinstance(rule_sources, list)
+                    or not rule_sources
+                    or any(str(source) not in source_ids for source in rule_sources)
+                ):
+                    raise NovelAIWebError("NovelAI 官方规则库引用无效。")
+                official_lines.append(f"- [{enforcement}][{rule_id}] {instruction}")
+            sections.append("\n".join(official_lines))
+
+            raw_preferences = local_preferences.get("preferences", [])
+            if not isinstance(raw_preferences, list):
+                raise NovelAIWebError("NovelAI 本地偏好层格式无效。")
+            preference_lines = [
+                "本地偏好层（低于用户明确要求与官方模型规则，不得反向覆盖）："
+            ]
+            for item in raw_preferences:
+                if not isinstance(item, dict):
+                    raise NovelAIWebError("NovelAI 本地偏好层包含无效记录。")
+                preference_id = str(item.get("id") or "").strip()
+                enforcement = str(item.get("enforcement") or "").strip()
+                instruction = str(item.get("instruction") or "").strip()
+                if (
+                    not preference_id
+                    or enforcement not in {"deterministic", "llm", "soft"}
+                    or not instruction
+                ):
+                    raise NovelAIWebError("NovelAI 本地偏好层记录无效。")
+                preference_lines.append(
+                    f"- [{enforcement}][{preference_id}] {instruction}"
+                )
+            sections.append("\n".join(preference_lines))
+
             for path in PROMPT_PLANNER_SYSTEM_PROMPT_PATHS:
                 section = path.read_text(encoding="utf-8").strip()
                 if not section:
@@ -574,8 +585,10 @@ class NovelAIWebPlugin(star.Star):
                         f"NovelAI Prompt 规划 skill 内容为空：{path.name}"
                     )
                 sections.append(section)
-        except OSError as exc:
-            raise NovelAIWebError("NovelAI Prompt 规划 skill 无法读取。") from exc
+        except (OSError, json.JSONDecodeError, TypeError) as exc:
+            raise NovelAIWebError(
+                "NovelAI Prompt 规划 skill 或官方规则库无法读取。"
+            ) from exc
         return "\n\n".join(sections)
 
     @staticmethod
@@ -663,64 +676,11 @@ class NovelAIWebPlugin(star.Star):
         return {"prompt": planned_prompt, "character_prompts": character_prompts}
 
     @staticmethod
-    def _enforce_occupation_anchors(
-        description: str,
-        planned_prompt: str,
-        max_length: int,
-    ) -> str:
-        """Make visually explicit painter subjects survive LLM compression."""
-        if (
-            not PAINTER_SUBJECT_PATTERN.search(description)
-            or PAINTER_STYLE_PATTERN.search(description)
-            or PAINTER_NEGATION_PATTERN.search(description)
-        ):
-            return planned_prompt
-
-        prompt_items = [
-            item.strip() for item in planned_prompt.split(",") if item.strip()
-        ]
-        normalized_items = [
-            re.sub(r"\s+", " ", item.casefold()) for item in prompt_items
-        ]
-
-        def has_alias(alias: str) -> bool:
-            alias_pattern = re.compile(
-                rf"(?<![a-z0-9_]){re.escape(alias)}(?![a-z0-9_])",
-                re.IGNORECASE,
-            )
-            return any(alias_pattern.search(item) for item in normalized_items)
-
-        missing = [
-            canonical
-            for canonical, aliases in PAINTER_VISUAL_ANCHOR_GROUPS
-            if not any(has_alias(alias) for alias in aliases)
-        ]
-        if not missing:
-            return planned_prompt
-
-        quality_items = {"best quality", "very aesthetic", "absurdres"}
-        insert_at = next(
-            (
-                index
-                for index, item in enumerate(prompt_items)
-                if item.casefold() in quality_items
-            ),
-            len(prompt_items),
-        )
-        prompt_items[insert_at:insert_at] = missing
-        expanded_prompt = ", ".join(prompt_items)
-        if len(expanded_prompt) > max_length:
-            raise NovelAIWebError(
-                f"补全职业视觉锚点后的 Prompt 过长，当前上限为 {max_length} 个字符。"
-            )
-        return expanded_prompt
-
-    @staticmethod
     def _semantic_plan_errors(
         description: str,
         plan: PromptPlan,
     ) -> list[str]:
-        """Find deterministic omissions or painter hallucinations in one plan.
+        """Find omissions that require deterministic post-processing.
 
         Args:
             description: Original user description before planning.
@@ -732,61 +692,12 @@ class NovelAIWebPlugin(star.Star):
         combined_prompt = ", ".join(
             (plan["prompt"], *plan["character_prompts"].values())
         )
-        hug_is_negated = bool(
-            re.search(
-                r"(?:不要|不|没有|禁止|拒绝)\s*(?:互相)?(?:拥抱|抱在一起)|"
-                r"\b(?:no|not|without)\s+hugg?",
-                description,
-                re.IGNORECASE,
-            )
-        )
         errors: list[str] = []
-        for name, source_pattern, output_pattern in SEMANTIC_ANCHOR_RULES:
-            if name == "hugging" and hug_is_negated:
-                if output_pattern.search(combined_prompt):
-                    errors.append("错误增加 hugging")
-                continue
-            if source_pattern.search(description) and not output_pattern.search(
-                combined_prompt
-            ):
-                errors.append(f"缺少 {name}")
-        if re.search(r"推倒|\bpush(?:ing|ed)?\s+(?:down|over)\b", description, re.I):
-            if not (
-                re.search(r"\bpush", plan["prompt"], re.I)
-                and re.search(
-                    r"\b(?:down|over|falling|fallen|on (?:the )?ground|lying)",
-                    plan["prompt"],
-                    re.I,
-                )
-            ):
-                errors.append("缺少 push-down 动作结果")
-            ordered_slots = list(
-                dict.fromkeys(CHARACTER_SLOT_PATTERN.findall(description))
-            )
-            if len(ordered_slots) >= 2:
-                source_prompt = plan["character_prompts"].get(ordered_slots[0], "")
-                target_prompt = plan["character_prompts"].get(ordered_slots[1], "")
-                if not re.search(r"\bsource#push", source_prompt, re.I):
-                    errors.append("主动人物缺少 source#push")
-                if not re.search(r"\btarget#push", target_prompt, re.I):
-                    errors.append("被动人物缺少 target#push")
-                if not re.search(
-                    r"\b(?:standing|leaning|reaching|arm extended|looking down)",
-                    source_prompt,
-                    re.I,
-                ):
-                    errors.append("主动人物缺少推人姿态")
-                if not re.search(
-                    r"\b(?:falling|backward|on (?:the )?ground|lying|looking up)",
-                    target_prompt,
-                    re.I,
-                ):
-                    errors.append("被动人物缺少倒地姿态")
-        if not PAINTER_SUBJECT_PATTERN.search(description) and re.search(
-            r"(?i)(?<![a-z])(?:painter|paintbrush|canvas \(object\)|easel)(?![a-z])",
+        if EXPLICIT_NUDITY_SOURCE_PATTERN.search(description) and not re.search(
+            r"(?i)(?<![a-z])(?:nude|naked)(?![a-z])",
             combined_prompt,
         ):
-            errors.append("凭空增加画师或画具")
+            errors.append("缺少 nude")
         return errors
 
     async def _plan_prompt(
@@ -880,12 +791,6 @@ class NovelAIWebPlugin(star.Star):
                     raw_response,
                     max_length,
                     required_character_slots,
-                )
-                plan["prompt"] = self._enforce_occupation_anchors(
-                    description,
-                    plan["prompt"],
-                    max_length
-                    - sum(len(value) for value in plan["character_prompts"].values()),
                 )
                 if CHIBI_SOURCE_PATTERN.search(description):
                     prompt_items = [
@@ -3102,7 +3007,6 @@ class NovelAIWebPlugin(star.Star):
                             if item.strip()
                             and item.strip().casefold()
                             not in {
-                                "nsfw",
                                 "rating:explicit",
                                 "rating:general",
                                 "rating:sensitive",
@@ -3119,7 +3023,7 @@ class NovelAIWebPlugin(star.Star):
                             ),
                             1,
                         )
-                        prompt_items[insert_at:insert_at] = ["rating:explicit", "nsfw"]
+                        prompt_items.insert(insert_at, "rating:explicit")
                         prompt_text = ", ".join(prompt_items)
                     if len(character_prompts) == 1:
                         duplicate_guards = (

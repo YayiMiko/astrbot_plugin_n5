@@ -531,68 +531,25 @@ def test_planner_ignores_unused_extra_fields() -> None:
     }
 
 
-def test_semantic_validation_rejects_painter_hallucination() -> None:
-    """Reject the previously observed painter hallucination and omissions."""
+def test_semantic_validation_does_not_require_topic_specific_tags() -> None:
+    """Let the planner express ordinary topics without a fixed vocabulary."""
     plan = {
-        "prompt": "painter, drawing (action), holding paintbrush, canvas (object)",
+        "prompt": "two friends meet beneath flowering trees in warm daylight",
         "character_prompts": {},
     }
-
-    errors = MODULE.NovelAIWebPlugin._semantic_plan_errors(
-        "A和B两个女孩子在春光下抱在一起",
-        plan,
-    )
-
-    assert errors == [
-        "缺少 2girls",
-        "缺少 hugging",
-        "缺少 spring",
-        "凭空增加画师或画具",
-    ]
-
-
-def test_semantic_validation_respects_negated_hug() -> None:
-    """Do not turn a negative interaction constraint into a required action."""
-    valid_plan = {
-        "prompt": "2girls, facing each other, outdoors, spring",
-        "character_prompts": {},
-    }
-    invalid_plan = {
-        "prompt": "2girls, facing each other, hugging, outdoors, spring",
-        "character_prompts": {},
-    }
-    description = "两个女孩面对面，但不要拥抱"
 
     assert (
         MODULE.NovelAIWebPlugin._semantic_plan_errors(
-            description,
-            valid_plan,
+            "A和B两个女孩子在春光下抱在一起",
+            plan,
         )
         == []
     )
-    assert MODULE.NovelAIWebPlugin._semantic_plan_errors(
-        description,
-        invalid_plan,
-    ) == ["错误增加 hugging"]
 
 
-def test_semantic_validation_requires_complete_push_down_roles() -> None:
-    """Require paired action roles and visible vertical posture for a push-down."""
-    description = "__NAI_CHARACTER_SLOT_1__把__NAI_CHARACTER_SLOT_2__推倒"
-    valid_plan = {
-        "prompt": "2people, one person pushing another down, falling backward",
-        "character_prompts": {
-            "__NAI_CHARACTER_SLOT_1__": (
-                "source#push, standing, leaning forward, arm extended, "
-                "looking down, tense expression, braced legs"
-            ),
-            "__NAI_CHARACTER_SLOT_2__": (
-                "target#push, falling backward, losing balance, lying on ground, "
-                "looking up, surprised expression, arms flailing"
-            ),
-        },
-    }
-    invalid_plan = {
+def test_semantic_validation_does_not_require_fixed_action_role_pack() -> None:
+    """Leave action wording and character roles to the V5 planner."""
+    plan = {
         "prompt": "2people, pushing, dynamic pose",
         "character_prompts": {
             "__NAI_CHARACTER_SLOT_1__": "source#push",
@@ -602,19 +559,11 @@ def test_semantic_validation_requires_complete_push_down_roles() -> None:
 
     assert (
         MODULE.NovelAIWebPlugin._semantic_plan_errors(
-            description,
-            valid_plan,
+            "__NAI_CHARACTER_SLOT_1__把__NAI_CHARACTER_SLOT_2__推倒",
+            plan,
         )
         == []
     )
-    assert MODULE.NovelAIWebPlugin._semantic_plan_errors(
-        description,
-        invalid_plan,
-    ) == [
-        "缺少 push-down 动作结果",
-        "被动人物缺少 target#push",
-        "主动人物缺少推人姿态",
-    ]
 
 
 def test_semantic_validation_has_no_character_tag_count_floor() -> None:
@@ -953,7 +902,7 @@ async def test_single_nude_character_adds_solo_rating_and_duplicate_guards() -> 
     ]
 
     plugin._generate_from_api.assert_awaited_once_with(
-        "1girl, solo, nude, rating:explicit, nsfw, full body, white background",
+        "1girl, solo, nude, rating:explicit, full body, white background",
         (832, 1216),
         (
             "girl, cartethyia (wuthering waves), blonde hair, nude, standing, relaxed pose",
@@ -1197,14 +1146,39 @@ async def test_chibi_planning_keeps_hard_style_and_removes_realism() -> None:
     assert "photorealistic" not in plan["prompt"]
     system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "NovelAI Diffusion V5 Curated" in system_prompt
-    assert "不设 Tag 数量、句数" in system_prompt
+    assert "[llm][v5-no-density-target]" in system_prompt
+    assert "[deterministic][single-subject-solo]" in system_prompt
+    assert "[llm][base-character-responsibility]" in system_prompt
+    assert "机器输出协议与 API 安全边界 > 用户本次明确要求" in system_prompt
     assert "角色展示、环境叙事、尺度对比奇观或物体中心" in system_prompt
-    assert "前景、中景、背景" in system_prompt
-    assert "共享至少一种物理关系" in system_prompt
     assert "本图专属的身份呈现、主题服装" in system_prompt
-    assert "主 Prompt、Character Prompt 与英文自然语言都不设固定项目数或句数" in system_prompt
+    assert "不设固定项目数、Tag 数、字数或句数" in system_prompt
     assert "最小必要的一组紧凑标签" in system_prompt
-    assert "6–14 个紧凑标签" not in system_prompt
+    assert "至少输出 `painter" not in system_prompt
+    assert "A把B推倒" not in system_prompt
+    assert "至少 3 个可见信号" not in system_prompt
+
+
+def test_official_knowledge_is_model_scoped_and_traceable() -> None:
+    """Keep every runtime official rule tied to a declared official source."""
+    manifest = json.loads(MODULE.OFFICIAL_SOURCE_MANIFEST_PATH.read_text("utf-8"))
+    rules = json.loads(MODULE.OFFICIAL_RULES_PATH.read_text("utf-8"))
+    preferences = json.loads(MODULE.LOCAL_PREFERENCES_PATH.read_text("utf-8"))
+    source_ids = {
+        source["id"]
+        for source in manifest["sources"]
+        if source["authority"] == "official"
+    }
+
+    assert rules["model"] == MODULE.NOVELAI_MODEL
+    assert rules["rules"]
+    assert all(rule["sources"] for rule in rules["rules"])
+    assert all(set(rule["sources"]) <= source_ids for rule in rules["rules"])
+    assert all(
+        rule["enforcement"] in {"deterministic", "llm", "soft"}
+        for rule in rules["rules"]
+    )
+    assert preferences["priority"].startswith("Local preferences apply only after")
 
 
 @pytest.mark.asyncio

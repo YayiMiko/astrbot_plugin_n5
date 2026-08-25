@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "model": "nai-diffusion-5-curated",
+  "rules": [
+    {
+      "id": "v5-hybrid-language",
+      "scope": "prompt_language",
+      "enforcement": "llm",
+      "instruction": "Use stable tags for recognizable concepts and concrete English natural language for spatial relationships, interactions, material behavior, lighting, and complex scene direction. Neither form is universally primary.",
+      "sources": ["official-v5-release", "official-prompt-basics"]
+    },
+    {
+      "id": "v5-no-density-target",
+      "scope": "prompt_length",
+      "enforcement": "llm",
+      "instruction": "NovelAI V5 supports longer prompts, but prompt length follows semantic need. Never impose a fixed tag count, sentence count, minimum density, or retry merely because a prompt is concise.",
+      "sources": ["official-v5-release"]
+    },
+    {
+      "id": "subject-count-in-base",
+      "scope": "subject_count",
+      "enforcement": "deterministic",
+      "instruction": "Put numbered subject counts such as 1girl, 2girls, 1boy, or 1other in the base prompt only.",
+      "sources": ["official-character-creation", "official-multiple-characters"]
+    },
+    {
+      "id": "single-subject-solo",
+      "scope": "subject_count",
+      "enforcement": "deterministic",
+      "instruction": "For exactly one visible character, use one numbered subject tag in the base prompt and add solo to discourage extra characters.",
+      "sources": ["official-character-creation"]
+    },
+    {
+      "id": "character-caption-subject-type",
+      "scope": "character_prompt",
+      "enforcement": "deterministic",
+      "instruction": "In each Character Prompt, use girl, boy, or other without a number. Do not repeat numbered counts there.",
+      "sources": ["official-multiple-characters"]
+    },
+    {
+      "id": "base-character-responsibility",
+      "scope": "character_prompt",
+      "enforcement": "llm",
+      "instruction": "The base prompt owns scene, style, shared action, composition, lighting, and total counts. Character Prompts own identity and character-specific appearance, clothing, props, actions, and expressions.",
+      "sources": ["official-multiple-characters"]
+    },
+    {
+      "id": "character-positioning-optional",
+      "scope": "character_positioning",
+      "enforcement": "soft",
+      "instruction": "Character positioning is optional. Use explicit coordinates only when spatial placement materially matters; otherwise allow the model to choose placement and preserve prompt order.",
+      "sources": ["official-multiple-characters", "official-v5-release"]
+    },
+    {
+      "id": "quality-toggle-model-scoped",
+      "scope": "quality",
+      "enforcement": "soft",
+      "instruction": "Quality Toggle additions are model-specific and may be hidden from the visible prompt. Do not stack a hand-written quality pack with automatic quality additions or copy a V4/V4.5 preset into V5 without evidence.",
+      "sources": ["official-quality-tags"]
+    },
+    {
+      "id": "undesired-content-targeted",
+      "scope": "negative_prompt",
+      "enforcement": "soft",
+      "instruction": "Use Undesired Content for concrete unwanted outcomes. Prefer a small request-relevant set over a universal negative pack.",
+      "sources": ["official-undesired-content"]
+    },
+    {
+      "id": "weighting-sparse",
+      "scope": "weighting",
+      "enforcement": "soft",
+      "instruction": "Use strengthening or weakening only for important concepts that are being lost. Keep weights balanced and avoid using weighting as a substitute for clear prompting.",
+      "sources": ["official-weighting"]
+    },
+    {
+      "id": "guidance-not-a-semantic-harness",
+      "scope": "generation_settings",
+      "enforcement": "soft",
+      "instruction": "Prompt Guidance controls adherence but excessive guidance can be counterproductive. Do not compensate for prompt conflicts by blindly raising guidance or steps.",
+      "sources": ["official-guidance"]
+    }
+  ]
+}
