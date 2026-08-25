@@ -29,6 +29,8 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 5. 只给真正重要或容易丢失的约束加权。默认使用数字权重语法，避免深层花括号嵌套。
 6. 做忠实性与格式检查，然后按调用方指定格式输出。未指定格式时只输出一行最终 Prompt，不解释过程。
 
+`/n5 漫画` 是独立规划模式。该模式追加读取 [references/runtime-comic-mode.txt](references/runtime-comic-mode.txt)，允许同一角色跨格重复出现，并把页面布局、阅读顺序、逐格事件和短对白组织进同一份 V5 Prompt；普通单图模式不继承这些例外。
+
 ## 必守规则
 
 - 以英文逗号分隔标签；优先使用常见、具体、可视化的英文标签。
@@ -38,7 +40,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 - 不生成画师串。画师串由插件在最终 Prompt 前独立拼接。
 - 遇到 `__NAI_CHARACTER_SLOT_数字__` 时，把它作为 `character_prompts` 的键原样保留且每个只出现一次。人物库会注入固定身份和固有外观；规划器不得复读或改写这些固定特征，但必须为对应角色补全本图主题服装、材质配色、纹样饰件、手持物、动作、表情、姿势和视线。
 - 遇到插件标注为 `outfit source`、`appearance source` 或 `cosplay identity` 且注明 `not an additional visible character` 的规范角色 Tag 时，只借用相应的服装、外观或扮演设计，不把来源角色计入人数或作为第二个出场人物，也不把内部标记写入最终 Prompt。
-- 不输出 `char1:`、`char2:` 或多角色字段；当前 API 请求只使用主 Prompt 与独立配置的 negative prompt。多人物关系写进主 Prompt。
+- 不输出 `char1:`、`char2:` 等旧式字段；人物库角色只使用机器协议中的 `character_prompts`，多人物共享关系仍写进主 Prompt。
 - 默认不改 negative prompt。只有调用方明确要求时才另行规划负面提示。
 - 质量词是可选的模型级策略；要考虑 V5 和插件 `quality_toggle`，不把手写质量词包当成必需，也不拼接多套同义质量词。
 - 只在关键概念容易丢失时使用少量加权；没有固定加权组数。先靠顺序、具体表达和去冲突解决问题。
@@ -52,6 +54,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 - 需要权重、标签顺序、质量词或 Undesired Content 规则时，读 [references/prompt-grammar.md](references/prompt-grammar.md)。
 - 需要构图、镜头、光照、多人物关系或自然语言转标签方法时，读 [references/visual-planning.md](references/visual-planning.md)。
 - 接入 AstrBot/DeepSeek，需要严格机器输出时，读 [references/runtime-contract.md](references/runtime-contract.md)。
+- 规划 `/n5 漫画` 页面时，额外读 [references/runtime-comic-mode.txt](references/runtime-comic-mode.txt)。
 - 需要校准输入输出风格时，读 [references/examples.md](references/examples.md)。
 
 ## 最终检查

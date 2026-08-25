@@ -108,7 +108,7 @@
     "description": "单次描述自动引用人物上限",
     "type": "int",
     "default": 4,
-    "hint": "命中群人物库角色名时使用；当前插件支持范围为 1 到 6。"
+    "hint": "命中人物库角色名或官方角色时使用；当前插件支持范围为 1 到 22。"
   },
   "timeout_seconds": {
     "description": "等待 NovelAI API 生成的超时秒数",

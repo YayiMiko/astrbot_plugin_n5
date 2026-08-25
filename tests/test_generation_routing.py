@@ -293,6 +293,67 @@ async def test_natural_language_still_uses_planner() -> None:
 
 
 @pytest.mark.asyncio
+async def test_comic_mode_keeps_repeated_character_and_panel_concepts() -> None:
+    """Use comic planning without applying single-image duplicate guards."""
+    plugin = build_plugin()
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "狐莉",
+            "girl, white hair, fox ears, fox tail",
+            "bad ears",
+        )
+    ]
+    plugin._resolve_character_slots = AsyncMock(
+        return_value=(
+            "__NAI_CHARACTER_SLOT_1__起床后发现尾巴缠在毯子里",
+            replacements,
+        )
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": (
+                "comic, 4koma, vertical four-panel page. Panel 1 shows the girl "
+                "waking up. Panel 2 shows her tail tangled in a blanket."
+            ),
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": (
+                    "same pajamas in every panel, sleepy, surprised, struggling"
+                )
+            },
+        }
+    )
+    plugin._user_negative_prompt = AsyncMock(
+        return_value="multiple views, duplicate, panels, lowres"
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "漫画 狐莉起床后发现尾巴缠在毯子里",
+        )
+    ]
+
+    assert plugin._plan_prompt.await_args.kwargs["comic_mode"] is True
+    plugin._generate_from_api.assert_awaited_once_with(
+        (
+            "nsfw, comic, 4koma, vertical four-panel page. Panel 1 shows the girl "
+            "waking up. Panel 2 shows her tail tangled in a blanket."
+        ),
+        (832, 1216),
+        (
+            "girl, white hair, fox ears, fox tail, same pajamas in every panel, "
+            "sleepy, surprised, struggling",
+        ),
+        "lowres",
+        ("bad ears",),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
 async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None:
     """Plan mixed character tags and natural language instead of leaking raw text."""
     plugin = build_plugin()
@@ -436,6 +497,7 @@ async def test_empty_n5_command_returns_copyable_examples() -> None:
             "请输入生图描述。\n"
             "示例：/n5 生成 雪夜车站里的银发少女\n"
             "其他模式：\n"
+            "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
             "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
             "/n5 原始 <Prompt>：跳过提示词优化\n"
             "发送 /n5 help 查看完整帮助。",
@@ -769,6 +831,36 @@ async def test_planner_accepts_concise_character_design_without_retry() -> None:
     assert plan["character_prompts"]["__NAI_CHARACTER_SLOT_1__"] == (
         "standing, serene expression, cloak"
     )
+
+
+@pytest.mark.asyncio
+async def test_comic_planner_receives_page_and_text_block_rules() -> None:
+    """Inject comic-only page layout and API text instructions into planning."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_enabled": True,
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    response = Mock(
+        completion_text=(
+            '{"ok":true,"prompt":"comic, 4koma. Panel 1 shows a fox girl. '
+            'Text: Good morning!","character_prompts":{},"error":null}'
+        )
+    )
+    plugin.context = Mock()
+    plugin.context.llm_generate = AsyncMock(return_value=response)
+
+    plan = await plugin._plan_prompt(
+        "画一页狐娘起床的四格漫画",
+        4000,
+        comic_mode=True,
+    )
+
+    system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "本次请求使用 NovelAI V5 漫画模式" in system_prompt
+    assert "Text: 原文" in system_prompt
+    assert "不得加入 `solo`" in system_prompt
+    assert plan["prompt"].startswith("comic, 4koma")
 
 
 @pytest.mark.asyncio
