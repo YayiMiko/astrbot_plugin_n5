@@ -36,7 +36,9 @@ class ImageEvent:
 
 
 @pytest.mark.asyncio
-async def test_request_image_metadata_is_local_and_request_scoped(tmp_path: Path) -> None:
+async def test_request_image_metadata_is_local_and_request_scoped(
+    tmp_path: Path,
+) -> None:
     """Read direct NovelAI metadata without consulting a latest-image file."""
     image_path = tmp_path / "novelai.png"
     metadata = PngInfo()
@@ -96,9 +98,7 @@ async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
                             {
                                 "source_name": "莫宁",
                                 "work": "wuthering waves",
-                                "candidate_tags": [
-                                    "mornye (wuthering waves)"
-                                ],
+                                "candidate_tags": ["mornye (wuthering waves)"],
                                 "appearance": "girl, silver hair, blue eyes",
                             }
                         ]
@@ -262,9 +262,7 @@ async def test_verified_alias_cache_skips_network_repair() -> None:
         (),
         "",
         RejectUnexpectedResolver(),
-        verified_aliases={
-            identity_alias_key("卡缇希娅", "Wuthering Waves"): canonical
-        },
+        verified_aliases={identity_alias_key("卡缇希娅", "Wuthering Waves"): canonical},
     )
 
     assert references == []

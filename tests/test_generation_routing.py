@@ -155,7 +155,7 @@ def build_plugin(
         return_value=MODULE.RequestImageContext((), "", ""),
     )
     plugin._resolve_planned_character_slots = AsyncMock(
-        side_effect=lambda _event, description, replacements, _image_context: (
+        side_effect=lambda _event, description, replacements, _image_context, _model: (
             description,
             replacements,
             [],
@@ -163,6 +163,7 @@ def build_plugin(
         ),
     )
     plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODEL)
     plugin._user_negative_prompt = AsyncMock(return_value="")
     plugin._join_generation_queue = AsyncMock(return_value=2)
     plugin._leave_generation_queue = AsyncMock()
@@ -236,6 +237,7 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
         (),
         "",
         (),
+        image_model=MODULE.NOVELAI_MODEL,
     )
     assert results == [("image", "generated.png")]
 
@@ -260,6 +262,7 @@ async def test_natural_language_still_uses_planner() -> None:
         (),
         "",
         (),
+        image_model=MODULE.NOVELAI_MODEL,
     )
     assert results == [("image", "generated.png")]
 
@@ -345,29 +348,34 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
     async def fake_plan_identities(*args, **kwargs):
         assert kwargs["event"] is event
         return (
-            [PlannedIdentity(
-                source_name="卡缇希娅",
-                work="Wuthering Waves",
-                role="outfit_source",
-                immutable_prompt=(
-                    "cartethyia (wuthering waves), girl, long blonde hair"
-                ),
-                verified=True,
-                canonical_tag="cartethyia (wuthering waves)",
-            )],
+            [
+                PlannedIdentity(
+                    source_name="卡缇希娅",
+                    work="Wuthering Waves",
+                    role="outfit_source",
+                    immutable_prompt=(
+                        "cartethyia (wuthering waves), girl, long blonde hair"
+                    ),
+                    verified=True,
+                    canonical_tag="cartethyia (wuthering waves)",
+                )
+            ],
             [],
         )
 
     monkeypatch.setattr(MODULE, "plan_identities", fake_plan_identities)
     event = FakeEvent()
 
-    description, replacements, warnings, reference_context = (
-        await plugin._resolve_planned_character_slots(
-            event,
-            "阿米娅穿着卡缇希娅的衣服",
-            [],
-            MODULE.RequestImageContext((), "", ""),
-        )
+    (
+        description,
+        replacements,
+        warnings,
+        reference_context,
+    ) = await plugin._resolve_planned_character_slots(
+        event,
+        "阿米娅穿着卡缇希娅的衣服",
+        [],
+        MODULE.RequestImageContext((), "", ""),
     )
 
     assert replacements == []
@@ -376,9 +384,10 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
     assert "cartethyia (wuthering waves)" in description
     assert "not an additional visible character" in description
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
-    assert cache["aliases"][
-        identity_alias_key("卡缇希娅", "Wuthering Waves")
-    ] == "cartethyia (wuthering waves)"
+    assert (
+        cache["aliases"][identity_alias_key("卡缇希娅", "Wuthering Waves")]
+        == "cartethyia (wuthering waves)"
+    )
 
 
 @pytest.mark.asyncio
@@ -429,13 +438,16 @@ async def test_creative_reference_context_does_not_create_an_extra_character(
 
     monkeypatch.setattr(MODULE, "plan_identities", fake_plan_identities)
 
-    description, replacements, warnings, reference_context = (
-        await plugin._resolve_planned_character_slots(
-            FakeEvent(),
-            "让卡提希娅打出虚式茈",
-            [],
-            MODULE.RequestImageContext((), "", ""),
-        )
+    (
+        description,
+        replacements,
+        warnings,
+        reference_context,
+    ) = await plugin._resolve_planned_character_slots(
+        FakeEvent(),
+        "让卡提希娅打出虚式茈",
+        [],
+        MODULE.RequestImageContext((), "", ""),
     )
 
     assert description.count("__NAI_CHARACTER_SLOT_1__") == 1
@@ -805,9 +817,7 @@ def test_explicit_nudity_is_a_semantic_anchor() -> None:
         "裸体的__NAI_CHARACTER_SLOT_1__",
         {
             "prompt": "1person, full body, white background",
-            "character_prompts": {
-                "__NAI_CHARACTER_SLOT_1__": "white dress, standing"
-            },
+            "character_prompts": {"__NAI_CHARACTER_SLOT_1__": "white dress, standing"},
         },
     )
 
@@ -865,6 +875,7 @@ async def test_character_generation_uses_native_captions() -> None:
         ),
         "",
         ("extra fingers", "bad eyes"),
+        image_model=MODULE.NOVELAI_MODEL,
     )
     assert results == [("image", "generated.png")]
 
@@ -887,9 +898,7 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
     plugin._plan_prompt = AsyncMock(
         return_value={
             "prompt": "1person, nude, full body, white background",
-            "character_prompts": {
-                "__NAI_CHARACTER_SLOT_1__": "standing, relaxed pose"
-            },
+            "character_prompts": {"__NAI_CHARACTER_SLOT_1__": "standing, relaxed pose"},
         }
     )
 
@@ -909,6 +918,7 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
         ),
         "multiple girls, multiple boys, multiple views, character sheet, lineup, duplicate",
         ("",),
+        image_model=MODULE.NOVELAI_MODEL,
     )
     assert results == [("image", "generated.png")]
 
@@ -939,6 +949,7 @@ async def test_redraw_reuses_native_character_captions() -> None:
         character_prompts,
         "lowres",
         ("extra fingers", "bad eyes"),
+        image_model=MODULE.NOVELAI_MODEL,
     )
     plugin._remember_last_prompt.assert_awaited_once_with(
         event,
@@ -1042,6 +1053,41 @@ async def test_user_negative_prompt_is_scoped_by_user_and_group(
     assert await plugin._user_negative_prompt(second_group) == ""
     assert await plugin._user_negative_prompt(other_user) == ""
     assert await plugin._user_negative_prompt(first_group, "") == ""
+
+
+@pytest.mark.asyncio
+async def test_user_image_model_switch_is_persistent_and_user_scoped(
+    tmp_path: Path,
+) -> None:
+    """Persist V5F for one QQ without changing another user's default model."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {"image_model": "nai-diffusion-5-curated"}
+    plugin._artist_state_lock = asyncio.Lock()
+    plugin._artist_state_path = Mock(return_value=tmp_path / "artist_strings.json")
+    first_group = CharacterEvent()
+    second_group = CharacterEvent(group_id="20002")
+    other_user = CharacterEvent(sender_id="10002")
+
+    assert await plugin._user_image_model(first_group) == MODULE.NOVELAI_MODELS["v5c"]
+    assert (
+        await plugin._user_image_model(first_group, "V5F")
+        == MODULE.NOVELAI_MODELS["v5f"]
+    )
+    assert await plugin._user_image_model(second_group) == MODULE.NOVELAI_MODELS["v5f"]
+    assert await plugin._user_image_model(other_user) == MODULE.NOVELAI_MODELS["v5c"]
+
+
+@pytest.mark.asyncio
+async def test_model_command_switches_to_v5_full() -> None:
+    """Expose a copyable chat switch when QQ buttons are unavailable."""
+    plugin = build_plugin()
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
+    event = FakeEvent()
+
+    results = [result async for result in plugin.generate_image(event, "模型 V5F")]
+
+    plugin._user_image_model.assert_awaited_once_with(event, "V5F")
+    assert results == [("plain", "你的绘图模型已切换为 V5F（Full）。")]
 
 
 @pytest.mark.asyncio
@@ -1170,7 +1216,7 @@ def test_official_knowledge_is_model_scoped_and_traceable() -> None:
         if source["authority"] == "official"
     }
 
-    assert rules["model"] == MODULE.NOVELAI_MODEL
+    assert set(rules["models"]) == set(MODULE.NOVELAI_MODELS.values())
     assert rules["rules"]
     assert all(rule["sources"] for rule in rules["rules"])
     assert all(set(rule["sources"]) <= source_ids for rule in rules["rules"])
@@ -1246,12 +1292,14 @@ async def test_v5_payload_uses_global_nsfw_without_content_rating() -> None:
     plugin._get_api_client = Mock(return_value=client)
 
     result = await plugin._generate_from_api(
-        "1girl, solo, rating:explicit, NSFW", (832, 1216)
+        "1girl, solo, rating:explicit, NSFW",
+        (832, 1216),
+        image_model=MODULE.NOVELAI_MODELS["v5f"],
     )
 
     assert result == Path("generated.png")
     assert client.payload["input"] == "nsfw, 1girl, solo"
-    assert client.payload["model"] == "nai-diffusion-5-curated"
+    assert client.payload["model"] == "nai-diffusion-5-full"
     parameters = client.payload["parameters"]
     assert parameters["params_version"] == 4
     assert parameters["qualityToggle"] is False
@@ -1294,6 +1342,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     }
     plugin._check_access = Mock()
     plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
     plugin._active_artist_string = AsyncMock(return_value=("千代noob", "artist:test"))
     plugin._user_negative_prompt = AsyncMock(return_value="")
     plugin._generation_queue_lock = asyncio.Lock()
@@ -1316,6 +1365,6 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     status = results[0][1]
     assert "队列: 生成中 1，等待 2，总计 3" in status
     assert "Prompt 模型: deepseek/deepseek-v4-flash-vision-exp" in status
-    assert f"绘图模型: {MODULE.NOVELAI_MODEL}" in status
+    assert "绘图模型: V5F（Full）" in status
     assert "当前画风: 千代noob" in status
     plugin._read_subscription.assert_awaited_once()

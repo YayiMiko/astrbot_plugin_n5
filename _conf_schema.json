@@ -39,6 +39,20 @@
     "default": 23,
     "hint": "Opus 免费生成不得超过 max_steps。"
   },
+  "image_model": {
+    "description": "默认 NovelAI V5 绘图模型",
+    "type": "string",
+    "default": "nai-diffusion-5-curated",
+    "options": [
+      "nai-diffusion-5-curated",
+      "nai-diffusion-5-full"
+    ],
+    "labels": [
+      "V5C（Curated）",
+      "V5F（Full）"
+    ],
+    "hint": "WebUI 下拉切换默认值；用户也可以发送 /n5 模型 V5C 或 /n5 模型 V5F 保存自己的选择。"
+  },
   "negative_prompt": {
     "description": "兼容用 NovelAI Undesired Content 默认值",
     "type": "string",

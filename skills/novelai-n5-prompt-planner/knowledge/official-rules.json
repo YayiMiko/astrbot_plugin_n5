@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "model": "nai-diffusion-5-curated",
+  "models": ["nai-diffusion-5-curated", "nai-diffusion-5-full"],
   "rules": [
     {
       "id": "v5-hybrid-language",

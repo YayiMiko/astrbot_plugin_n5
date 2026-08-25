@@ -40,6 +40,14 @@ NOVELAI_API_BASE_URL = "https://image.novelai.net"
 NOVELAI_IMAGE_ENDPOINT = "/ai/generate-image"
 NOVELAI_SUBSCRIPTION_ENDPOINT = "/user/subscription"
 NOVELAI_MODEL = "nai-diffusion-5-curated"
+NOVELAI_MODELS = {
+    "v5c": NOVELAI_MODEL,
+    "v5f": "nai-diffusion-5-full",
+}
+NOVELAI_MODEL_LABELS = {
+    NOVELAI_MODELS["v5c"]: "V5C（Curated）",
+    NOVELAI_MODELS["v5f"]: "V5F（Full）",
+}
 NOVELAI_PARAMS_VERSION = 4
 NOVELAI_PAT_ENV = "NOVELAI_API_TOKEN"
 DEFAULT_STEPS = 23
@@ -140,6 +148,7 @@ class ArtistUserState(TypedDict):
     last_negative_prompt_by_library: dict[str, str]
     last_character_prompts_by_library: dict[str, list[str]]
     last_character_negative_prompts_by_library: dict[str, list[str]]
+    image_model: str
     width: int
     height: int
 
@@ -419,6 +428,7 @@ class NovelAIWebPlugin(star.Star):
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
                 "/n5 负面 - 查看自己的当前负面提示词",
                 "/n5 负面 <内容>|清空 - 设置或清空自己的负面提示词",
+                "/n5 模型 [V5C|V5F] - 查看或切换绘图模型",
                 "/n5 尺寸 竖图|横图|方图|<宽>x<高> - 设置免费尺寸",
                 "/n5 状态 - 检查 API 与当前设置",
                 "/n5 诊断 - 显示模型、路由和隔离策略",
@@ -522,7 +532,10 @@ class NovelAIWebPlugin(star.Star):
             local_preferences = json.loads(
                 LOCAL_PREFERENCES_PATH.read_text(encoding="utf-8")
             )
-            if official_rules.get("model") != NOVELAI_MODEL:
+            supported_models = official_rules.get("models", [])
+            if not isinstance(supported_models, list) or any(
+                model not in supported_models for model in NOVELAI_MODELS.values()
+            ):
                 raise NovelAIWebError("NovelAI 官方规则库与当前生图模型不匹配。")
             raw_sources = source_manifest.get("sources", [])
             source_ids = {
@@ -845,7 +858,7 @@ class NovelAIWebPlugin(star.Star):
         """Load shared libraries and per-QQ selections with legacy migration."""
         state_path = self._artist_state_path()
         if not state_path.is_file():
-            return {"version": 6, "libraries": {}, "users": {}}
+            return {"version": 7, "libraries": {}, "users": {}}
         try:
             raw_state = json.loads(state_path.read_text(encoding="utf-8"))
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
@@ -1036,6 +1049,15 @@ class NovelAIWebPlugin(star.Star):
                     )
                 except (TypeError, ValueError, NovelAIWebError):
                     width, height = DEFAULT_GENERATION_SIZE
+                raw_image_model = raw_user.get("image_model", "")
+                try:
+                    image_model = (
+                        self._normalize_image_model(raw_image_model)
+                        if isinstance(raw_image_model, str) and raw_image_model.strip()
+                        else ""
+                    )
+                except NovelAIWebError:
+                    image_model = ""
                 users[sender_id] = {
                     "active_by_library": active_by_library,
                     "negative_prompt_by_library": negative_prompt_by_library,
@@ -1049,10 +1071,11 @@ class NovelAIWebPlugin(star.Star):
                     "last_character_negative_prompts_by_library": (
                         last_character_negative_prompts_by_library
                     ),
+                    "image_model": image_model,
                     "width": width,
                     "height": height,
                 }
-        return {"version": 6, "libraries": libraries, "users": users}
+        return {"version": 7, "libraries": libraries, "users": users}
 
     def _save_artist_state(self, state: ArtistState) -> None:
         """Atomically persist per-QQ artist strings and selections."""
@@ -1619,6 +1642,7 @@ class NovelAIWebPlugin(star.Star):
         description: str,
         replacements: list[tuple[str, str, str, str]],
         image_context: RequestImageContext,
+        image_model: str = NOVELAI_MODEL,
     ) -> tuple[str, list[tuple[str, str, str, str]], list[str], str]:
         """Add protected characters and researched creative references.
 
@@ -1627,6 +1651,7 @@ class NovelAIWebPlugin(star.Star):
             description: Description after saved-character replacement.
             replacements: Existing protected character entries.
             image_context: Request-scoped multimodal context.
+            image_model: NovelAI V5 model used for vocabulary verification.
 
         Returns:
             Slotted description, character entries, warnings, and reference context.
@@ -1654,7 +1679,7 @@ class NovelAIWebPlugin(star.Star):
                 NovelAITagResolver(
                     self._get_api_client(),
                     NOVELAI_API_BASE_URL,
-                    NOVELAI_MODEL,
+                    image_model,
                 ),
                 event=event,
                 verified_aliases=verified_aliases,
@@ -1945,9 +1970,74 @@ class NovelAIWebPlugin(star.Star):
             "last_negative_prompt_by_library": {},
             "last_character_prompts_by_library": {},
             "last_character_negative_prompts_by_library": {},
+            "image_model": "",
             "width": DEFAULT_GENERATION_SIZE[0],
             "height": DEFAULT_GENERATION_SIZE[1],
         }
+
+    @staticmethod
+    def _normalize_image_model(value: str) -> str:
+        """Normalize one supported V5 model name.
+
+        Args:
+            value: User-facing alias or NovelAI API model identifier.
+
+        Returns:
+            Canonical NovelAI API model identifier.
+
+        Raises:
+            NovelAIWebError: If the value does not select V5 Curated or V5 Full.
+        """
+        normalized = re.sub(r"[\s_-]+", "", str(value).casefold())
+        aliases = {
+            "v5c": NOVELAI_MODELS["v5c"],
+            "5c": NOVELAI_MODELS["v5c"],
+            "curated": NOVELAI_MODELS["v5c"],
+            "v5curated": NOVELAI_MODELS["v5c"],
+            "naidiffusion5curated": NOVELAI_MODELS["v5c"],
+            "v5f": NOVELAI_MODELS["v5f"],
+            "5f": NOVELAI_MODELS["v5f"],
+            "full": NOVELAI_MODELS["v5f"],
+            "v5full": NOVELAI_MODELS["v5f"],
+            "naidiffusion5full": NOVELAI_MODELS["v5f"],
+        }
+        image_model = aliases.get(normalized)
+        if image_model is None:
+            raise NovelAIWebError("用法：/n5 模型 V5C|V5F")
+        return image_model
+
+    async def _user_image_model(
+        self,
+        event: AstrMessageEvent,
+        selection: str | None = None,
+    ) -> str:
+        """Read or persist this QQ user's NovelAI V5 model selection.
+
+        Args:
+            event: Message event identifying the QQ user.
+            selection: Optional V5C or V5F selection to persist.
+
+        Returns:
+            Canonical NovelAI API model identifier.
+        """
+        default_model = self._normalize_image_model(
+            str(self.config.get("image_model", NOVELAI_MODEL))
+        )
+        sender_id = self._artist_owner_id(event)
+        async with self._artist_state_lock:
+            state = self._load_artist_state()
+            user_state = state["users"].get(sender_id)
+            if selection is None:
+                if user_state is None or not user_state["image_model"]:
+                    return default_model
+                return user_state["image_model"]
+            image_model = self._normalize_image_model(selection)
+            if user_state is None:
+                user_state = self._new_user_state()
+                state["users"][sender_id] = user_state
+            user_state["image_model"] = image_model
+            self._save_artist_state(state)
+            return image_model
 
     async def _user_negative_prompt(
         self,
@@ -2512,6 +2602,7 @@ class NovelAIWebPlugin(star.Star):
         try:
             self._check_access(event)
             width, height = await self._user_generation_size(event)
+            image_model = await self._user_image_model(event)
             selected_artist = await self._active_artist_string(event)
             negative_prompt = await self._user_negative_prompt(event)
             async with self._generation_queue_lock:
@@ -2569,7 +2660,7 @@ class NovelAIWebPlugin(star.Star):
             f"Anlas: {balance}（已购 {purchased}）\n"
             f"队列: 生成中 {queue_active}，等待 {queue_waiting}，总计 {queue_total}\n"
             f"Prompt 模型: {planner_provider}\n"
-            f"绘图模型: {NOVELAI_MODEL}\n"
+            f"绘图模型: {NOVELAI_MODEL_LABELS[image_model]}\n"
             f"当前画风: {selected_artist[0] if selected_artist else '原生'}\n"
             f"负面提示词: {negative_prompt or '未设置'}\n"
             f"尺寸: {width}x{height}\n"
@@ -2630,9 +2721,27 @@ class NovelAIWebPlugin(star.Star):
                 return
             yield event.plain_result(f"你的生成尺寸已设置为 {width}x{height}。")
             return
+        elif subcommand == "模型":
+            try:
+                self._check_access(event)
+                if arguments:
+                    image_model = await self._user_image_model(event, arguments)
+                    yield event.plain_result(
+                        f"你的绘图模型已切换为 {NOVELAI_MODEL_LABELS[image_model]}。"
+                    )
+                else:
+                    image_model = await self._user_image_model(event)
+                    yield event.plain_result(
+                        f"当前绘图模型：{NOVELAI_MODEL_LABELS[image_model]}\n"
+                        "切换：/n5 模型 V5C 或 /n5 模型 V5F"
+                    )
+            except NovelAIWebError as exc:
+                yield event.plain_result(str(exc))
+            return
         elif subcommand == "诊断":
             try:
                 self._check_access(event)
+                image_model = await self._user_image_model(event)
             except NovelAIWebError as exc:
                 yield event.plain_result(str(exc))
                 return
@@ -2640,7 +2749,7 @@ class NovelAIWebPlugin(star.Star):
                 "N5 诊断\n"
                 f"指令路由：/n5（未注册 /nai 别名）\n"
                 f"规划模型：{self.config.get('prompt_planner_provider_id', DEFAULT_PROMPT_PLANNER_PROVIDER_ID)}\n"
-                f"绘图模型：{NOVELAI_MODEL}\n"
+                f"绘图模型：{NOVELAI_MODEL_LABELS[image_model]}\n"
                 "图片选择：本条图片优先，其次引用图片；不使用全局 latest 回退\n"
                 "角色校正：NovelAI 官方 suggest-tags 为主"
             )
@@ -2870,6 +2979,7 @@ class NovelAIWebPlugin(star.Star):
                 ) = last_generation
                 prompt_text = self._apply_global_nsfw_prompt(prompt_text)
                 generation_size = await self._user_generation_size(event)
+                image_model = await self._user_image_model(event)
             except NovelAIWebError as exc:
                 yield event.plain_result(str(exc))
                 return
@@ -2884,6 +2994,7 @@ class NovelAIWebPlugin(star.Star):
                             character_prompts,
                             negative_prompt,
                             character_negative_prompts,
+                            image_model=image_model,
                         )
                         await self._remember_last_prompt(
                             event,
@@ -2939,6 +3050,7 @@ class NovelAIWebPlugin(star.Star):
                     f"画面描述过长，当前上限为 {max_prompt_length} 个字符。"
                 )
             image_context = await self._request_image_context(event)
+            image_model = await self._user_image_model(event)
             if subcommand == "参考" and not image_context.image_urls:
                 raise NovelAIWebError(
                     "用法：发送图片并输入 /n5 参考 <修改要求>，或引用一条图片消息。"
@@ -2966,6 +3078,7 @@ class NovelAIWebPlugin(star.Star):
                     prompt_text,
                     character_replacements,
                     image_context,
+                    image_model,
                 )
                 if creative_reference_context:
                     prompt_text += "\n\n" + creative_reference_context
@@ -3062,6 +3175,7 @@ class NovelAIWebPlugin(star.Star):
                         character_prompts,
                         negative_prompt,
                         character_negative_prompts,
+                        image_model=image_model,
                     )
                     await self._remember_last_prompt(
                         event,
@@ -3096,6 +3210,8 @@ class NovelAIWebPlugin(star.Star):
         character_prompts: tuple[str, ...] = (),
         negative_prompt: str = "",
         character_negative_prompts: tuple[str, ...] = (),
+        *,
+        image_model: str = NOVELAI_MODEL,
     ) -> Path:
         """Submit one guarded free-generation request to the NovelAI API.
 
@@ -3105,6 +3221,7 @@ class NovelAIWebPlugin(star.Star):
             character_prompts: Native V5 captions for separately controlled characters.
             negative_prompt: Base NovelAI Undesired Content prompt.
             character_negative_prompts: Per-character V5 negative captions.
+            image_model: Canonical NovelAI V5 Curated or Full identifier.
 
         Returns:
             Path to the verified generated image.
@@ -3113,6 +3230,7 @@ class NovelAIWebPlugin(star.Star):
             NovelAIWebError: If a guard, authentication, network, or response fails.
         """
         prompt = self._apply_global_nsfw_prompt(prompt)
+        image_model = self._normalize_image_model(image_model)
         try:
             width, height = self._validate_generation_size(*generation_size)
             steps = int(self.config.get("steps", DEFAULT_STEPS))
@@ -3183,7 +3301,7 @@ class NovelAIWebPlugin(star.Star):
         ]
         payload = {
             "input": prompt,
-            "model": NOVELAI_MODEL,
+            "model": image_model,
             "action": "generate",
             "parameters": {
                 "params_version": NOVELAI_PARAMS_VERSION,
