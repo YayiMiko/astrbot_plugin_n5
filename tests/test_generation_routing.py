@@ -614,13 +614,11 @@ def test_semantic_validation_requires_complete_push_down_roles() -> None:
         "缺少 push-down 动作结果",
         "被动人物缺少 target#push",
         "主动人物缺少推人姿态",
-        "__NAI_CHARACTER_SLOT_1__ 人物设计过于简略（1/7）",
-        "__NAI_CHARACTER_SLOT_2__ 人物设计过于简略（1/7）",
     ]
 
 
-def test_semantic_validation_rejects_thin_single_character_design() -> None:
-    """Retry fixed-character plans that omit per-image visual design."""
+def test_semantic_validation_has_no_character_tag_count_floor() -> None:
+    """Accept concise character captions without a numeric density harness."""
     description = "雪山的圣女__NAI_CHARACTER_SLOT_1__"
     thin_plan = {
         "prompt": "1person, snowy mountain, full body, cold light",
@@ -630,25 +628,10 @@ def test_semantic_validation_rejects_thin_single_character_design() -> None:
             )
         },
     }
-    detailed_plan = {
-        "prompt": "1person, snowy mountain, full body, cold light",
-        "character_prompts": {
-            "__NAI_CHARACTER_SLOT_1__": (
-                "holy maiden, fur-trimmed cape, layered ceremonial dress, "
-                "high collar, gold embroidery, snowflake motifs, white gloves, "
-                "holding crystal staff, serene expression, looking at viewer"
-            )
-        },
-    }
-
-    assert MODULE.NovelAIWebPlugin._semantic_plan_errors(
-        description,
-        thin_plan,
-    ) == ["__NAI_CHARACTER_SLOT_1__ 人物设计过于简略（4/10）"]
     assert (
         MODULE.NovelAIWebPlugin._semantic_plan_errors(
             description,
-            detailed_plan,
+            thin_plan,
         )
         == []
     )
@@ -678,8 +661,8 @@ def test_minimal_and_chibi_character_requests_skip_density_guard() -> None:
 
 
 @pytest.mark.asyncio
-async def test_planner_retries_until_fixed_character_design_is_detailed() -> None:
-    """Use the retry path when a planner returns only a thin character caption."""
+async def test_planner_accepts_concise_character_design_without_retry() -> None:
+    """Do not retry solely because a character caption has few comma items."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "prompt_planner_enabled": True,
@@ -692,19 +675,8 @@ async def test_planner_retries_until_fixed_character_design_is_detailed() -> Non
             '"standing, serene expression, cloak"},"error":null}'
         )
     )
-    detailed_response = Mock(
-        completion_text=(
-            '{"ok":true,"prompt":"1person, snowy mountain, cold light",'
-            '"character_prompts":{"__NAI_CHARACTER_SLOT_1__":'
-            '"holy maiden, fur-trimmed cape, layered ceremonial dress, high collar, '
-            "gold embroidery, snowflake motifs, white gloves, holding crystal staff, "
-            'serene expression, dignified posture"},"error":null}'
-        )
-    )
     plugin.context = Mock()
-    plugin.context.llm_generate = AsyncMock(
-        side_effect=[thin_response, detailed_response]
-    )
+    plugin.context.llm_generate = AsyncMock(return_value=thin_response)
 
     plan = await plugin._plan_prompt(
         "雪山的圣女__NAI_CHARACTER_SLOT_1__",
@@ -712,13 +684,10 @@ async def test_planner_retries_until_fixed_character_design_is_detailed() -> Non
         ("__NAI_CHARACTER_SLOT_1__",),
     )
 
-    assert plugin.context.llm_generate.await_count == 2
-    assert (
-        "layered ceremonial dress"
-        in plan["character_prompts"]["__NAI_CHARACTER_SLOT_1__"]
+    assert plugin.context.llm_generate.await_count == 1
+    assert plan["character_prompts"]["__NAI_CHARACTER_SLOT_1__"] == (
+        "standing, serene expression, cloak"
     )
-    retry_prompt = plugin.context.llm_generate.await_args_list[1].kwargs["prompt"]
-    assert "主题服装、配饰、手持物" in retry_prompt
 
 
 @pytest.mark.asyncio
