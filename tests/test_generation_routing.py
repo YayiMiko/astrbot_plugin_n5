@@ -16,7 +16,11 @@ from PIL import Image
 PLUGIN_PATH = Path(__file__).resolve().parents[1] / "main.py"
 sys.path.insert(0, str(PLUGIN_PATH.parent))
 
-from identity_planner import PlannedIdentity, identity_alias_key  # noqa: E402
+from identity_planner import (  # noqa: E402
+    PlannedIdentity,
+    PlannedReference,
+    identity_alias_key,
+)
 
 SPEC = importlib.util.spec_from_file_location("novelai_plugin_under_test", PLUGIN_PATH)
 assert SPEC is not None and SPEC.loader is not None
@@ -155,6 +159,7 @@ def build_plugin(
             description,
             replacements,
             [],
+            "",
         ),
     )
     plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
@@ -339,8 +344,8 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
 
     async def fake_plan_identities(*args, **kwargs):
         assert kwargs["event"] is event
-        return [
-            PlannedIdentity(
+        return (
+            [PlannedIdentity(
                 source_name="卡缇希娅",
                 work="Wuthering Waves",
                 role="outfit_source",
@@ -349,13 +354,14 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
                 ),
                 verified=True,
                 canonical_tag="cartethyia (wuthering waves)",
-            )
-        ]
+            )],
+            [],
+        )
 
     monkeypatch.setattr(MODULE, "plan_identities", fake_plan_identities)
     event = FakeEvent()
 
-    description, replacements, warnings = (
+    description, replacements, warnings, reference_context = (
         await plugin._resolve_planned_character_slots(
             event,
             "阿米娅穿着卡缇希娅的衣服",
@@ -366,12 +372,98 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
 
     assert replacements == []
     assert warnings == []
+    assert reference_context == ""
     assert "cartethyia (wuthering waves)" in description
     assert "not an additional visible character" in description
     cache = json.loads(cache_path.read_text(encoding="utf-8"))
     assert cache["aliases"][
         identity_alias_key("卡缇希娅", "Wuthering Waves")
     ] == "cartethyia (wuthering waves)"
+
+
+@pytest.mark.asyncio
+async def test_creative_reference_context_does_not_create_an_extra_character(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    """Pass a famous technique as trusted scene context for the real subject."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "max_characters_per_prompt": 4,
+    }
+    plugin.context = SimpleNamespace()
+    plugin._identity_alias_lock = asyncio.Lock()
+    plugin._get_api_client = Mock()
+    monkeypatch.setattr(
+        MODULE.NovelAIWebPlugin,
+        "_identity_alias_state_path",
+        staticmethod(lambda: tmp_path / "identity_aliases.json"),
+    )
+
+    async def fake_plan_identities(*args, **kwargs):
+        return (
+            [
+                PlannedIdentity(
+                    source_name="卡提希娅",
+                    work="Wuthering Waves",
+                    role="visible_subject",
+                    immutable_prompt="cartethyia (wuthering waves), girl",
+                    verified=True,
+                    canonical_tag="cartethyia (wuthering waves)",
+                )
+            ],
+            [
+                PlannedReference(
+                    source_name="虚式茈",
+                    work="咒术回战",
+                    reference_type="technique_reference",
+                    canonical_name="Hollow Purple",
+                    work_en="Jujutsu Kaisen",
+                    visual_blueprint="A violet sphere tears through a destructive corridor.",
+                    anchor_tags=("purple energy", "energy sphere"),
+                    exclude_subjects=("Satoru Gojo",),
+                )
+            ],
+        )
+
+    monkeypatch.setattr(MODULE, "plan_identities", fake_plan_identities)
+
+    description, replacements, warnings, reference_context = (
+        await plugin._resolve_planned_character_slots(
+            FakeEvent(),
+            "让卡提希娅打出虚式茈",
+            [],
+            MODULE.RequestImageContext((), "", ""),
+        )
+    )
+
+    assert description.count("__NAI_CHARACTER_SLOT_1__") == 1
+    assert len(replacements) == 1
+    assert warnings == []
+    assert "Hollow Purple" in reference_context
+    assert "Satoru Gojo" in reference_context
+    assert "__NAI_CHARACTER_SLOT_2__" not in reference_context
+
+
+def test_creative_reference_bypasses_legacy_character_tag_minimum() -> None:
+    """Do not reject a complete reference plan because of old tag counts."""
+    description = (
+        "让__NAI_CHARACTER_SLOT_1__重现名场面\n"
+        "[CREATIVE_REFERENCE_BEGIN]\n"
+        "Visual blueprint: A violet sphere tears through a destructive corridor.\n"
+        "[CREATIVE_REFERENCE_END]"
+    )
+    plan = {
+        "prompt": "1girl, purple energy. A violet sphere tears through the air.",
+        "character_prompts": {
+            "__NAI_CHARACTER_SLOT_1__": "arm extended, braced stance"
+        },
+    }
+
+    errors = MODULE.NovelAIWebPlugin._semantic_plan_errors(description, plan)
+
+    assert not any("人物设计过于简略" in error for error in errors)
 
 
 @pytest.mark.asyncio
@@ -1042,13 +1134,14 @@ async def test_chibi_planning_keeps_hard_style_and_removes_realism() -> None:
     assert "photorealistic" not in plan["prompt"]
     system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "NovelAI Diffusion V5 Curated" in system_prompt
-    assert "1–3 句" in system_prompt
+    assert "不设 Tag 数量、句数" in system_prompt
     assert "角色展示、环境叙事、尺度对比奇观或物体中心" in system_prompt
     assert "前景、中景、背景" in system_prompt
     assert "共享至少一种物理关系" in system_prompt
     assert "本图专属的身份呈现、主题服装" in system_prompt
-    assert "服饰通常选择 10–16 个有效标签" in system_prompt
-    assert "6–14 个紧凑标签" in system_prompt
+    assert "主 Prompt、Character Prompt 与英文自然语言都不设固定项目数或句数" in system_prompt
+    assert "最小必要的一组紧凑标签" in system_prompt
+    assert "6–14 个紧凑标签" not in system_prompt
 
 
 @pytest.mark.asyncio

@@ -49,6 +49,8 @@ DEFAULT_ARTIST_STRING_NAME = "千代NAI1"
 DEFAULT_ARTIST_STRING = (
     "artist:deyui, artist:yukisiannn, artist:kani biimu, artist:shiromochi_sakura"
 )
+CREATIVE_REFERENCE_BEGIN = "[CREATIVE_REFERENCE_BEGIN]"
+CREATIVE_REFERENCE_END = "[CREATIVE_REFERENCE_END]"
 ORIGINAL_ARTIST_STYLE = "__NAI_ORIGINAL_STYLE__"
 CHIBI_SOURCE_PATTERN = re.compile(
     r"(?:Q版|Ｑ版|q版|chibi|super[\s_-]*deformed)",
@@ -609,7 +611,8 @@ class NovelAIWebPlugin(star.Star):
         if not planned_prompt:
             raise NovelAIWebError("Prompt 规划模型返回了空 Prompt。")
         forbidden = re.search(
-            r"(?i)(?:\bartist\s*:|\bartist collaboration\b|\bchar\s*\d+\s*:)",
+            r"(?i)(?:\bartist\s*:|\bartist collaboration\b|\bchar\s*\d+\s*:|"
+            r"CREATIVE_REFERENCE_(?:BEGIN|END))",
             planned_prompt,
         )
         if forbidden:
@@ -774,6 +777,7 @@ class NovelAIWebPlugin(star.Star):
             character_slots
             and not CHIBI_SOURCE_PATTERN.search(description)
             and not MINIMAL_SOURCE_PATTERN.search(description)
+            and CREATIVE_REFERENCE_BEGIN not in description
         ):
             minimum_items = 10 if len(character_slots) == 1 else 7
             for slot in character_slots:
@@ -851,7 +855,7 @@ class NovelAIWebPlugin(star.Star):
             system_prompt += (
                 "\n\n本次输入包含强风格约束 Q版/chibi。必须在主 Prompt 开头保留 "
                 "`chibi, super deformed`；身份、动作和必要场景仍需表达，但使用 "
-                "6–14 个紧凑标签，避免自动补充 realistic proportions、photorealistic、"
+                "最小必要的一组紧凑标签，避免自动补充 realistic proportions、photorealistic、"
                 "tall、long legs 或写实电影镜头等会稀释 Q 版比例的内容。"
             )
         retry_prompt = description
@@ -1692,8 +1696,8 @@ class NovelAIWebPlugin(star.Star):
         description: str,
         replacements: list[tuple[str, str, str, str]],
         image_context: RequestImageContext,
-    ) -> tuple[str, list[tuple[str, str, str, str]], list[str]]:
-        """Add DS4F-planned characters as protected native V5 captions.
+    ) -> tuple[str, list[tuple[str, str, str, str]], list[str], str]:
+        """Add protected characters and researched creative references.
 
         Args:
             event: Current event used for native web-search permissions.
@@ -1702,7 +1706,7 @@ class NovelAIWebPlugin(star.Star):
             image_context: Request-scoped multimodal context.
 
         Returns:
-            Slotted description, all character entries, and unresolved warnings.
+            Slotted description, character entries, warnings, and reference context.
 
         Raises:
             NovelAIWebError: If the multimodal identity planner fails.
@@ -1718,7 +1722,7 @@ class NovelAIWebPlugin(star.Star):
         async with self._identity_alias_lock:
             verified_aliases = self._load_verified_identity_aliases()
         try:
-            identities = await plan_identities(
+            identities, creative_references = await plan_identities(
                 self.context,
                 provider_id,
                 description,
@@ -1801,7 +1805,41 @@ class NovelAIWebPlugin(star.Star):
             )
             if not identity.verified:
                 warnings.append(identity.source_name)
-        return description, replacements, warnings
+        reference_sections: list[str] = []
+        for reference in creative_references:
+            lines = [
+                f"Type: {reference.reference_type}",
+                f"Source term: {reference.source_name}",
+                f"Canonical name: {reference.canonical_name}",
+            ]
+            source_work = reference.work_en or reference.work
+            if source_work:
+                lines.append(f"Source work: {source_work}")
+            if reference.anchor_tags:
+                lines.append(
+                    "Optional visual anchors: " + ", ".join(reference.anchor_tags)
+                )
+            if reference.visual_blueprint:
+                lines.append("Visual blueprint: " + reference.visual_blueprint)
+            if reference.exclude_subjects:
+                lines.append(
+                    "Do not add source performers unless explicitly requested: "
+                    + ", ".join(reference.exclude_subjects)
+                )
+            lines.append(
+                "Adapt this visual language to the actual requested subject; this reference is not another character."
+            )
+            reference_sections.append("\n".join(lines))
+        reference_context = ""
+        if reference_sections:
+            reference_context = (
+                CREATIVE_REFERENCE_BEGIN
+                + "\n"
+                + "\n\n".join(reference_sections)
+                + "\n"
+                + CREATIVE_REFERENCE_END
+            )
+        return description, replacements, warnings, reference_context
 
     @staticmethod
     def _restore_character_slots(
@@ -2968,17 +3006,21 @@ class NovelAIWebPlugin(star.Star):
                 event, prompt_text
             )
             unresolved_identities: list[str] = []
+            creative_reference_context = ""
             if not is_direct_prompt:
                 (
                     prompt_text,
                     character_replacements,
                     unresolved_identities,
+                    creative_reference_context,
                 ) = await self._resolve_planned_character_slots(
                     event,
                     prompt_text,
                     character_replacements,
                     image_context,
                 )
+                if creative_reference_context:
+                    prompt_text += "\n\n" + creative_reference_context
             character_expansion = sum(
                 max(0, len(content) - len(slot))
                 for slot, _, content, _ in character_replacements
