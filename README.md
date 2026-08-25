@@ -20,6 +20,7 @@
 - **V5 模型切换**：WebUI 下拉设置默认模型，聊天中可按用户切换 V5C / V5F。
 - **免费生成防护**：Opus 身份校验、总像素上限、Steps 上限、响应大小上限，以及 429 排队重试。
 - **队列与并发控制**：串行生成 + 排队计数，避免并发打爆账号。
+- **可靠图片交付**：插件直接发送不带引用的纯图片；NapCat 回执超时时核验最近消息，未确认才自动重试一次，并保留请求级状态供 `/n5 重发` 使用。
 - **Bug 反馈**：`/n5 bug反馈`，反馈会记录并私聊通知管理员。
 - **旧插件迁移**：首次启动时自动复制旧插件 `astrbot_plugin_novelai` 的兼容数据。
 
@@ -78,6 +79,7 @@ pip install -r requirements.txt
 | `max_character_prompt_length` | 单个人物 Prompt 最大字符数 | `2000` |
 | `max_characters_per_prompt` | 单次描述自动引用人物的上限（`1`–`6`） | `4` |
 | `timeout_seconds` | 等待 NovelAI API 生成的超时秒数 | `180` |
+| `delivery_verify_delay_seconds` | 图片 ACK 超时后等待 NapCat 历史核验的秒数 | `3` |
 | `rate_limit_max_retries` | 429 最大排队重试次数 | `8` |
 | `rate_limit_wait_seconds` | 429 固定重试间隔秒数 | `5` |
 | `max_response_bytes` | NovelAI API 响应最大字节数 | `16777216` |
@@ -120,6 +122,8 @@ python scripts/configure_pat.py
 | `/n5 参考 <修改要求>` | 使用本条或引用消息中的图片作参考 |
 | `/n5 原始 <Prompt>` | 跳过自然语言规划，原样生成 |
 | `/n5 再来` | 复用自己上一次成功生成的最终 Prompt（等价 `/n5 重抽`） |
+| `/n5 重发` | 重发当前会话最近生成的图片，不重新调用 NovelAI |
+| `/n5 最近` | 查看当前会话最近一次图片交付状态 |
 | `/n5 角色 [名称]` | 列出或查看自己的角色（等价 `/n5 人物`） |
 | `/n5 画风 [名称\|默认\|原生]` | 查看或切换画风（等价 `画师串` / `切换画师串` / `查看画师串`） |
 | `/n5 负面` | 查看自己的当前负面提示词 |
@@ -173,6 +177,7 @@ python scripts/configure_pat.py
 - **提示「未配置 PAT」**：设置 `NOVELAI_API_TOKEN` 环境变量，或用 `configure_pat.py` 生成 DPAPI 文件。
 - **`/n5 参考` 不生效**：该指令需要本条消息或引用消息中带有图片，且规划模型必须支持原生图片输入。
 - **Prompt 规划失败**：检查 `prompt_planner_provider_id` 是否可用；规划器默认三次重试，超时或 JSON 无效时会提示「Prompt 规划暂时失败」，不会把未经校验的模型回复当作 Prompt。
+- **图片生成后没有出现**：插件会在 NapCat ACK 超时时核验最近消息并至多自动重试一次；仍失败时可发送 `/n5 最近` 查看状态，或发送 `/n5 重发` 直接重发已有图片，不会消耗新的生成次数。
 
 ---
 

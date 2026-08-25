@@ -37,6 +37,7 @@ class FakeEvent:
         self.call_llm = True
         self.stopped = False
         self.message = message
+        self.sent: list[tuple[str, str]] = []
 
     def get_message_str(self) -> str:
         """Return the configured raw message text."""
@@ -78,6 +79,24 @@ class FakeEvent:
             Result kind and path.
         """
         return "image", path
+
+    async def send(self, result: tuple[str, str]) -> None:
+        """Record one direct plugin-owned delivery.
+
+        Args:
+            result: Fake message result sent by the plugin.
+        """
+        self.sent.append(result)
+
+
+class AckTimeoutError(Exception):
+    """Represent one NapCat send acknowledgement timeout."""
+
+    retcode = 1200
+    wording = (
+        "Timeout: NTEvent serviceAndMethod:NodeIKernelMsgService/sendMsg "
+        "ListenerName:NodeIKernelMsgListener/onMsgInfoListUpdate"
+    )
 
 
 class CharacterEvent:
@@ -144,7 +163,10 @@ def build_plugin(
         Plugin with generation dependencies mocked.
     """
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
-    plugin.config = {"max_prompt_length": 4000}
+    plugin.config = {
+        "max_prompt_length": 4000,
+        "delivery_verify_delay_seconds": 0,
+    }
     plugin._generation_semaphore = asyncio.Semaphore(1)
     plugin._check_access = Mock()
     plugin._active_artist_string = AsyncMock(return_value=None)
@@ -173,6 +195,9 @@ def build_plugin(
     plugin._restore_character_slots = Mock(side_effect=lambda prompt, _items: prompt)
     plugin._generate_from_api = AsyncMock(return_value=Path("generated.png"))
     plugin._remember_last_prompt = AsyncMock()
+    plugin._record_delivery_task = AsyncMock(return_value="task-1")
+    plugin._update_delivery_task = AsyncMock()
+    plugin._delivery_history_contains_image = AsyncMock(return_value=False)
     return plugin
 
 
@@ -239,7 +264,7 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
         (),
         image_model=MODULE.NOVELAI_MODEL,
     )
-    assert results == [("image", "generated.png")]
+    assert results == []
 
 
 @pytest.mark.asyncio
@@ -264,7 +289,7 @@ async def test_natural_language_still_uses_planner() -> None:
         (),
         image_model=MODULE.NOVELAI_MODEL,
     )
-    assert results == [("image", "generated.png")]
+    assert results == []
 
 
 @pytest.mark.asyncio
@@ -488,7 +513,8 @@ async def test_explicit_nai_command_is_hard_routed_before_default_llm() -> None:
 
     assert event.call_llm is False
     assert event.stopped is True
-    assert results == [("image", "generated.png")]
+    assert results == []
+    assert event.sent == [("image", "generated.png")]
     plugin._plan_prompt.assert_awaited_once()
 
 
@@ -877,7 +903,7 @@ async def test_character_generation_uses_native_captions() -> None:
         ("extra fingers", "bad eyes"),
         image_model=MODULE.NOVELAI_MODEL,
     )
-    assert results == [("image", "generated.png")]
+    assert results == []
 
 
 @pytest.mark.asyncio
@@ -920,7 +946,7 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
         ("",),
         image_model=MODULE.NOVELAI_MODEL,
     )
-    assert results == [("image", "generated.png")]
+    assert results == []
 
 
 @pytest.mark.asyncio
@@ -958,7 +984,149 @@ async def test_redraw_reuses_native_character_captions() -> None:
         "lowres",
         ("extra fingers", "bad eyes"),
     )
-    assert results == [("image", "generated.png")]
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_delivery_ack_timeout_is_confirmed_from_group_history() -> None:
+    """Avoid retrying when NapCat history confirms the ambiguous send."""
+    plugin = build_plugin()
+    event = FakeEvent()
+    event.send = AsyncMock(side_effect=AckTimeoutError())
+    plugin._delivery_history_contains_image = AsyncMock(return_value=True)
+
+    await plugin._deliver_generated_image(event, Path("generated.png"))
+
+    assert event.send.await_count == 1
+    plugin._delivery_history_contains_image.assert_awaited_once()
+    assert plugin._update_delivery_task.await_args_list[-1].args[1] == (
+        "sent_after_ack_timeout"
+    )
+
+
+@pytest.mark.asyncio
+async def test_group_history_confirmation_matches_self_time_and_file_size(
+    tmp_path: Path,
+) -> None:
+    """Confirm only the bot's matching recent image, not another member's image."""
+    plugin = build_plugin()
+    output_path = tmp_path / "generated.png"
+    output_path.write_bytes(b"image-bytes")
+    event = AccessEvent()
+    event.message_obj = SimpleNamespace(raw_message={"self_id": 2806797912})
+    event.bot = SimpleNamespace(
+        call_action=AsyncMock(
+            return_value={
+                "messages": [
+                    {
+                        "time": 200,
+                        "sender": {"user_id": 10002},
+                        "message": [
+                            {
+                                "type": "image",
+                                "data": {"file_size": len(b"image-bytes")},
+                            }
+                        ],
+                    },
+                    {
+                        "time": 201,
+                        "sender": {"user_id": 2806797912},
+                        "message": [
+                            {
+                                "type": "image",
+                                "data": {"file_size": str(len(b"image-bytes"))},
+                            }
+                        ],
+                    },
+                ]
+            }
+        )
+    )
+
+    confirmed = await MODULE.NovelAIWebPlugin._delivery_history_contains_image(
+        plugin,
+        event,
+        output_path,
+        200,
+    )
+
+    assert confirmed is True
+    event.bot.call_action.assert_awaited_once_with(
+        "get_group_msg_history",
+        group_id="20001",
+        count=20,
+        reverse_order=False,
+        disable_get_url=True,
+        parse_mult_msg=False,
+    )
+
+
+@pytest.mark.asyncio
+async def test_delivery_retries_once_then_sends_failure_notice() -> None:
+    """Retry one unconfirmed ACK timeout without regenerating the image."""
+    plugin = build_plugin()
+    event = FakeEvent()
+    event.send = AsyncMock(
+        side_effect=[AckTimeoutError(), AckTimeoutError(), None],
+    )
+
+    await plugin._deliver_generated_image(event, Path("generated.png"))
+
+    assert event.send.await_count == 3
+    assert plugin._delivery_history_contains_image.await_count == 2
+    assert plugin._update_delivery_task.await_args_list[-1].args[1] == (
+        "send_failed_after_retry"
+    )
+    assert event.send.await_args_list[-1].args[0] == (
+        "plain",
+        "图片已经生成，但 QQ 图片发送失败。发送 /n5 重发 可再次发送，"
+        "不会重新消耗 NAI 点数。",
+    )
+
+
+@pytest.mark.asyncio
+async def test_resend_uses_latest_scoped_output_without_generation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resend the latest surviving output without another NovelAI request."""
+    plugin = build_plugin()
+    output_dir = tmp_path / "outputs"
+    output_dir.mkdir()
+    output_path = output_dir / "latest.png"
+    output_path.write_bytes(b"png")
+    monkeypatch.setattr(
+        MODULE.star.StarTools,
+        "get_data_dir",
+        lambda _name: tmp_path,
+    )
+    plugin._last_delivery_task = AsyncMock(
+        return_value={
+            "task_id": "task-existing",
+            "created_at": "2026-08-25T22:00:00+09:00",
+            "sender_id": "10001",
+            "conversation": "group:20001",
+            "group_id": "20001",
+            "output_path": str(output_path),
+            "generated": True,
+            "delivery_status": "send_failed_after_retry",
+            "retry_count": 1,
+            "error": "timeout",
+        }
+    )
+    plugin._deliver_generated_image = AsyncMock()
+    event = FakeEvent()
+
+    results = [result async for result in plugin.generate_image(event, "重发")]
+
+    assert results == []
+    plugin._generate_from_api.assert_not_awaited()
+    plugin._deliver_generated_image.assert_awaited_once_with(
+        event,
+        output_path.resolve(),
+        task_id="task-existing",
+        retry_count=2,
+    )
 
 
 @pytest.mark.asyncio
