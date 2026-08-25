@@ -1,0 +1,131 @@
+{
+  "allowed_sender_ids": {
+    "description": "NovelAI 使用者 QQ 白名单",
+    "type": "list",
+    "default": [],
+    "hint": "私聊和群聊统一校验；留空时拒绝所有 NovelAI 指令。"
+  },
+  "bug_report_admin_ids": {
+    "description": "Bug 反馈私聊通知 QQ",
+    "type": "list",
+    "default": [],
+    "hint": "反馈会先本地保存，再私聊通知这些 QQ；留空时回退到私聊控制者白名单。"
+  },
+  "allow_group": {
+    "description": "允许群聊触发",
+    "type": "bool",
+    "default": false,
+    "hint": "总开关；开启且群号白名单留空时，对使用者白名单开放所有群。"
+  },
+  "allowed_group_ids": {
+    "description": "允许使用 NovelAI 的群号白名单",
+    "type": "list",
+    "default": [],
+    "hint": "留空时允许所有群；群内仍只允许使用者 QQ 白名单中的账号执行。"
+  },
+  "max_total_pixels": {
+    "description": "免费生成总像素上限",
+    "type": "int",
+    "default": 1048576
+  },
+  "max_steps": {
+    "description": "免费生成 Steps 上限",
+    "type": "int",
+    "default": 28
+  },
+  "steps": {
+    "description": "NovelAI API 生成 Steps",
+    "type": "int",
+    "default": 23,
+    "hint": "Opus 免费生成不得超过 max_steps。"
+  },
+  "negative_prompt": {
+    "description": "兼容用 NovelAI Undesired Content 默认值",
+    "type": "string",
+    "default": "",
+    "hint": "默认留空；群成员通过 /n5 负面 独立设置自己的负面提示词。"
+  },
+  "default_artist_string_name": {
+    "description": "全局默认画风名称",
+    "type": "string",
+    "default": "千代NAI1"
+  },
+  "default_artist_string": {
+    "description": "全局默认画师串",
+    "type": "string",
+    "default": "artist:deyui, artist:yukisiannn, artist:kani biimu, artist:shiromochi_sakura",
+    "hint": "未选择群画师串的用户自动使用；/n5 切换画师串 原生 可关闭。"
+  },
+  "quality_toggle": {
+    "description": "使用 NovelAI 自动质量标签",
+    "type": "bool",
+    "default": false,
+    "hint": "NAI5 默认关闭，避免自动质量词覆盖画师风格；自然语言规划器会按题材加入精简质量与复杂度标签。"
+  },
+  "uc_preset": {
+    "description": "NovelAI UC Preset 编号",
+    "type": "int",
+    "default": 3,
+    "hint": "默认 3（None），仅使用 /n5 负面 中显式配置的 Undesired Content。"
+  },
+  "max_prompt_length": {
+    "description": "Prompt 最大字符数",
+    "type": "int",
+    "default": 4000
+  },
+  "prompt_planner_enabled": {
+    "description": "启用 DeepSeek Prompt 规划",
+    "type": "bool",
+    "default": true,
+    "hint": "开启后仅自然语言描述会交给 DeepSeek 规划；现成的 NovelAI 标签 Prompt 会原样直通。"
+  },
+  "prompt_planner_provider_id": {
+    "description": "Prompt 规划模型 Provider ID",
+    "type": "string",
+    "default": "deepseek/deepseek-v4-flash-vision-exp",
+    "hint": "与群聊默认模型相互独立；Flash 延迟更低，适合日常 Prompt 规划。"
+  },
+  "max_character_prompt_length": {
+    "description": "单个人物 Prompt 最大字符数",
+    "type": "int",
+    "default": 2000
+  },
+  "max_characters_per_prompt": {
+    "description": "单次描述自动引用人物上限",
+    "type": "int",
+    "default": 4,
+    "hint": "命中群人物库角色名时使用；当前插件支持范围为 1 到 6。"
+  },
+  "timeout_seconds": {
+    "description": "等待 NovelAI API 生成的超时秒数",
+    "type": "int",
+    "default": 180
+  },
+  "rate_limit_max_retries": {
+    "description": "NovelAI 返回 429 时的最大排队重试次数",
+    "type": "int",
+    "default": 8,
+    "hint": "只重试明确的 HTTP/响应内 429；超时和其他错误不会自动重试。"
+  },
+  "rate_limit_wait_seconds": {
+    "description": "429 固定重试间隔秒数",
+    "type": "int",
+    "default": 5,
+    "hint": "每次 429 都等待相同时间，不做指数递增。"
+  },
+  "max_response_bytes": {
+    "description": "NovelAI API 响应最大字节数",
+    "type": "int",
+    "default": 16777216
+  },
+  "max_image_bytes": {
+    "description": "返回 QQ 的单图最大字节数",
+    "type": "int",
+    "default": 33554432
+  },
+  "max_image_pixels": {
+    "description": "结果图最大总像素",
+    "type": "int",
+    "default": 16777216
+  }
+}

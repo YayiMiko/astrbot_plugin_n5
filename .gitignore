@@ -1,0 +1,18 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+/data/
+.env
+.env.*
+!.env.example
+*.log
+
+# Never publish credentials or runtime data, even if copied into this repository.
+novelai_pat.dpapi
+artist_strings.json
+characters.json
+bug_reports.json
+outputs/
+chrome_profile/
