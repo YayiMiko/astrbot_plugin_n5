@@ -212,6 +212,28 @@ class BugReportState(TypedDict):
     reports: list[BugReport]
 
 
+class DeliveryTask(TypedDict):
+    """Persist one generated image and its chat delivery state."""
+
+    task_id: str
+    created_at: str
+    sender_id: str
+    conversation: str
+    group_id: str
+    output_path: str
+    generated: bool
+    delivery_status: str
+    retry_count: int
+    error: str
+
+
+class DeliveryState(TypedDict):
+    """Persist bounded request-scoped image delivery history."""
+
+    version: int
+    tasks: list[DeliveryTask]
+
+
 class NovelAIWebError(Exception):
     """Represent a safe error message that can be returned to the bot owner."""
 
@@ -241,6 +263,7 @@ class NovelAIWebPlugin(star.Star):
         self._character_state_lock = asyncio.Lock()
         self._identity_alias_lock = asyncio.Lock()
         self._bug_report_lock = asyncio.Lock()
+        self._delivery_state_lock = asyncio.Lock()
         self._pending_character_changes: dict[
             tuple[str, str], PendingCharacterChange
         ] = {}
@@ -424,6 +447,8 @@ class NovelAIWebPlugin(star.Star):
                 "/n5 参考 <修改要求> - 使用本条或引用消息中的图片",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 再来 - 复用自己上一次成功生成的最终 Prompt",
+                "/n5 重发 - 重发当前会话最近生成的图片，不重新生图",
+                "/n5 最近 - 查看当前会话最近一次图片交付状态",
                 "/n5 角色 [名称] - 列出或查看自己的角色",
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
                 "/n5 负面 - 查看自己的当前负面提示词",
@@ -460,6 +485,11 @@ class NovelAIWebPlugin(star.Star):
     def _bug_report_state_path() -> Path:
         """Return the persistent user bug report state path."""
         return star.StarTools.get_data_dir(PLUGIN_NAME) / "bug_reports.json"
+
+    @staticmethod
+    def _delivery_state_path() -> Path:
+        """Return the request-scoped image delivery state path."""
+        return star.StarTools.get_data_dir(PLUGIN_NAME) / "deliveries.json"
 
     @staticmethod
     def _identity_alias_state_path() -> Path:
@@ -1241,6 +1271,154 @@ class NovelAIWebPlugin(star.Star):
             temporary_path.replace(state_path)
         except OSError as exc:
             raise NovelAIWebError("Bug 反馈记录无法保存。") from exc
+
+    def _load_delivery_state(self) -> DeliveryState:
+        """Load and sanitize bounded image delivery history."""
+        state_path = self._delivery_state_path()
+        if not state_path.is_file():
+            return {"version": 1, "tasks": []}
+        try:
+            raw_state = json.loads(state_path.read_text(encoding="utf-8"))
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            logger.warning("[n5] delivery history could not be read: %s", exc)
+            return {"version": 1, "tasks": []}
+        raw_tasks = raw_state.get("tasks", []) if isinstance(raw_state, dict) else []
+        if not isinstance(raw_tasks, list):
+            return {"version": 1, "tasks": []}
+
+        tasks: list[DeliveryTask] = []
+        for raw_task in raw_tasks[-200:]:
+            if not isinstance(raw_task, dict):
+                continue
+            task_id = str(raw_task.get("task_id", "")).strip()
+            sender_id = str(raw_task.get("sender_id", "")).strip()
+            conversation = str(raw_task.get("conversation", "")).strip()
+            output_path = str(raw_task.get("output_path", "")).strip()
+            if not task_id or not sender_id or not conversation or not output_path:
+                continue
+            try:
+                retry_count = max(0, int(raw_task.get("retry_count", 0)))
+            except (TypeError, ValueError):
+                retry_count = 0
+            tasks.append(
+                {
+                    "task_id": task_id,
+                    "created_at": str(raw_task.get("created_at", "")).strip(),
+                    "sender_id": sender_id,
+                    "conversation": conversation,
+                    "group_id": str(raw_task.get("group_id", "")).strip(),
+                    "output_path": output_path,
+                    "generated": bool(raw_task.get("generated", True)),
+                    "delivery_status": str(
+                        raw_task.get("delivery_status", "unknown")
+                    ).strip(),
+                    "retry_count": retry_count,
+                    "error": str(raw_task.get("error", ""))[:500],
+                }
+            )
+        return {"version": 1, "tasks": tasks}
+
+    def _save_delivery_state(self, state: DeliveryState) -> None:
+        """Atomically persist bounded image delivery history.
+
+        Args:
+            state: Sanitized delivery state.
+        """
+        state_path = self._delivery_state_path()
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary_path = state_path.with_suffix(".json.tmp")
+        try:
+            temporary_path.write_text(
+                json.dumps(state, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            temporary_path.replace(state_path)
+        except OSError as exc:
+            logger.warning("[n5] delivery history could not be saved: %s", exc)
+
+    async def _record_delivery_task(
+        self,
+        event: AstrMessageEvent,
+        output_path: Path,
+    ) -> str:
+        """Create one generated-image delivery task.
+
+        Args:
+            event: Request event identifying the sender and conversation.
+            output_path: Verified generated image path.
+
+        Returns:
+            Unique delivery task identifier.
+        """
+        task_id = uuid4().hex
+        task: DeliveryTask = {
+            "task_id": task_id,
+            "created_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+            "sender_id": self._artist_owner_id(event),
+            "conversation": self._artist_library_key(event),
+            "group_id": "" if event.is_private_chat() else str(event.get_group_id()),
+            "output_path": str(output_path.resolve()),
+            "generated": True,
+            "delivery_status": "pending",
+            "retry_count": 0,
+            "error": "",
+        }
+        async with self._delivery_state_lock:
+            state = self._load_delivery_state()
+            state["tasks"] = [*state["tasks"], task][-200:]
+            self._save_delivery_state(state)
+        return task_id
+
+    async def _update_delivery_task(
+        self,
+        task_id: str,
+        status: str,
+        *,
+        retry_count: int = 0,
+        error: str = "",
+    ) -> None:
+        """Update the originating delivery task without touching another request.
+
+        Args:
+            task_id: Unique task identifier.
+            status: Current delivery state.
+            retry_count: Automatic or manual resend count.
+            error: Sanitized platform error text.
+        """
+        async with self._delivery_state_lock:
+            state = self._load_delivery_state()
+            for task in reversed(state["tasks"]):
+                if task["task_id"] != task_id:
+                    continue
+                task["delivery_status"] = status
+                task["retry_count"] = max(0, retry_count)
+                task["error"] = error[:500]
+                self._save_delivery_state(state)
+                return
+
+    async def _last_delivery_task(
+        self,
+        event: AstrMessageEvent,
+    ) -> DeliveryTask | None:
+        """Return this user's latest generated image in this conversation.
+
+        Args:
+            event: Request event identifying the sender and conversation.
+
+        Returns:
+            A copied delivery task, or ``None`` when no matching task exists.
+        """
+        sender_id = self._artist_owner_id(event)
+        conversation = self._artist_library_key(event)
+        async with self._delivery_state_lock:
+            state = self._load_delivery_state()
+            for task in reversed(state["tasks"]):
+                if (
+                    task["sender_id"] == sender_id
+                    and task["conversation"] == conversation
+                ):
+                    return task.copy()
+        return None
 
     @staticmethod
     def _validate_character_name(name: str) -> str:
@@ -2148,6 +2326,209 @@ class NovelAIWebPlugin(star.Star):
                 tuple(character_negative_prompts),
             )
 
+    @staticmethod
+    def _is_delivery_ack_timeout(exc: Exception) -> bool:
+        """Return whether a platform error is an ambiguous send ACK timeout.
+
+        Args:
+            exc: Exception raised by the platform send API.
+
+        Returns:
+            True for NapCat/OneBot send acknowledgement timeouts.
+        """
+        retcode = getattr(exc, "retcode", None)
+        wording = str(getattr(exc, "wording", "") or getattr(exc, "message", "") or exc)
+        return retcode == 1200 or (
+            "Timeout" in wording and "NodeIKernelMsgService/sendMsg" in wording
+        )
+
+    async def _delivery_history_contains_image(
+        self,
+        event: AstrMessageEvent,
+        output_path: Path,
+        started_at: int,
+    ) -> bool:
+        """Check recent NapCat history for the image after an ACK timeout.
+
+        Args:
+            event: Original message event carrying the OneBot client.
+            output_path: Image whose byte size identifies the attempted upload.
+            started_at: Unix timestamp immediately before the send attempt.
+
+        Returns:
+            True when a recent self-sent image with the same byte size exists.
+        """
+        bot = getattr(event, "bot", None)
+        if bot is None or not hasattr(bot, "call_action"):
+            return False
+        raw_event = getattr(getattr(event, "message_obj", None), "raw_message", None)
+        self_id = ""
+        if isinstance(raw_event, dict):
+            self_id = str(raw_event.get("self_id", "")).strip()
+        if not self_id:
+            return False
+        try:
+            if event.is_private_chat():
+                payload = await bot.call_action(
+                    "get_friend_msg_history",
+                    user_id=str(event.get_sender_id()),
+                    count=20,
+                    reverse_order=False,
+                    disable_get_url=True,
+                    parse_mult_msg=False,
+                )
+            else:
+                payload = await bot.call_action(
+                    "get_group_msg_history",
+                    group_id=str(event.get_group_id()),
+                    count=20,
+                    reverse_order=False,
+                    disable_get_url=True,
+                    parse_mult_msg=False,
+                )
+        except Exception as exc:
+            logger.warning(
+                "[n5] could not verify an ACK timeout through message history: %s",
+                str(exc)[:500],
+            )
+            return False
+        messages = payload.get("messages", []) if isinstance(payload, dict) else []
+        if not isinstance(messages, list):
+            return False
+        try:
+            expected_size = output_path.stat().st_size
+        except OSError:
+            return False
+        for message in messages:
+            if not isinstance(message, dict):
+                continue
+            sender = message.get("sender", {})
+            sender_id = sender.get("user_id") if isinstance(sender, dict) else None
+            try:
+                message_time = int(message.get("time", 0))
+            except (TypeError, ValueError):
+                continue
+            if str(sender_id) != self_id or message_time < started_at - 5:
+                continue
+            segments = message.get("message", [])
+            if not isinstance(segments, list):
+                continue
+            for segment in segments:
+                if not isinstance(segment, dict) or segment.get("type") != "image":
+                    continue
+                data = segment.get("data", {})
+                if not isinstance(data, dict):
+                    continue
+                try:
+                    file_size = int(data.get("file_size", -1))
+                except (TypeError, ValueError):
+                    continue
+                if file_size == expected_size:
+                    return True
+        return False
+
+    async def _deliver_generated_image(
+        self,
+        event: AstrMessageEvent,
+        output_path: Path,
+        *,
+        task_id: str | None = None,
+        retry_count: int = 0,
+    ) -> None:
+        """Send a standalone image with ACK reconciliation and one retry.
+
+        Args:
+            event: Original request event used for direct platform delivery.
+            output_path: Verified image file to send.
+            task_id: Existing task identifier for manual resend.
+            retry_count: Number of sends already attempted for the task.
+        """
+        active_task_id = task_id or await self._record_delivery_task(event, output_path)
+        current_retry_count = max(0, retry_count)
+        last_error = ""
+        for attempt in range(2):
+            if attempt == 1:
+                current_retry_count += 1
+            started_at = int(datetime.now().timestamp())
+            try:
+                await event.send(event.image_result(str(output_path)))
+            except Exception as exc:
+                last_error = str(
+                    getattr(exc, "wording", "") or getattr(exc, "message", "") or exc
+                )[:500]
+                if not self._is_delivery_ack_timeout(exc):
+                    await self._update_delivery_task(
+                        active_task_id,
+                        "send_failed",
+                        retry_count=current_retry_count,
+                        error=last_error,
+                    )
+                    break
+                await self._update_delivery_task(
+                    active_task_id,
+                    "ack_timeout",
+                    retry_count=current_retry_count,
+                    error=last_error,
+                )
+                await asyncio.sleep(
+                    max(
+                        0.0,
+                        float(self.config.get("delivery_verify_delay_seconds", 3)),
+                    )
+                )
+                if await self._delivery_history_contains_image(
+                    event,
+                    output_path,
+                    started_at,
+                ):
+                    await self._update_delivery_task(
+                        active_task_id,
+                        "sent_after_ack_timeout",
+                        retry_count=current_retry_count,
+                        error=last_error,
+                    )
+                    return
+                if attempt == 0:
+                    logger.warning(
+                        "[n5] image ACK timed out and history did not confirm delivery; "
+                        "retrying once. task=%s path=%s",
+                        active_task_id,
+                        output_path,
+                    )
+                    continue
+                await self._update_delivery_task(
+                    active_task_id,
+                    "send_failed_after_retry",
+                    retry_count=current_retry_count,
+                    error=last_error,
+                )
+                break
+            else:
+                await self._update_delivery_task(
+                    active_task_id,
+                    "sent",
+                    retry_count=current_retry_count,
+                )
+                return
+
+        logger.warning(
+            "[n5] generated image delivery failed. task=%s path=%s error=%s",
+            active_task_id,
+            output_path,
+            last_error,
+        )
+        notice = (
+            "图片已经生成，但 QQ 图片发送失败。发送 /n5 重发 可再次发送，"
+            "不会重新消耗 NAI 点数。"
+        )
+        try:
+            await event.send(event.plain_result(notice))
+        except Exception as notice_exc:
+            logger.warning(
+                "[n5] image delivery failure notice could not be sent: %s",
+                str(notice_exc)[:500],
+            )
+
     def _validate_generation_size(self, width: int, height: int) -> tuple[int, int]:
         """Validate a NovelAI size against UI and zero-Anlas constraints."""
         if not 64 <= width <= 2048 or not 64 <= height <= 2048:
@@ -2754,6 +3135,48 @@ class NovelAIWebPlugin(star.Star):
                 "角色校正：NovelAI 官方 suggest-tags 为主"
             )
             return
+        elif subcommand in {"重发", "最近"}:
+            try:
+                self._check_access(event)
+                if arguments:
+                    raise NovelAIWebError(f"用法：/n5 {subcommand}")
+                task = await self._last_delivery_task(event)
+                if task is None:
+                    raise NovelAIWebError("当前会话还没有可用的 N5 生成记录。")
+                output_path = Path(task["output_path"]).resolve()
+                output_root = (
+                    star.StarTools.get_data_dir(PLUGIN_NAME) / "outputs"
+                ).resolve()
+                if output_path.parent != output_root or not output_path.is_file():
+                    raise NovelAIWebError("最近生成的图片文件已不存在，无法重发。")
+            except NovelAIWebError as exc:
+                yield event.plain_result(str(exc))
+                return
+            if subcommand == "最近":
+                status_labels = {
+                    "pending": "等待发送",
+                    "sent": "已确认发送",
+                    "ack_timeout": "发送回执超时",
+                    "sent_after_ack_timeout": "历史记录已确认送达",
+                    "send_failed": "发送失败",
+                    "send_failed_after_retry": "自动重试后仍失败",
+                }
+                yield event.plain_result(
+                    "N5 最近生成\n"
+                    f"任务：{task['task_id'][:8]}\n"
+                    f"时间：{task['created_at'] or '未知'}\n"
+                    f"交付：{status_labels.get(task['delivery_status'], task['delivery_status'])}\n"
+                    f"重试：{task['retry_count']} 次\n"
+                    "文件：仍可重发"
+                )
+                return
+            await self._deliver_generated_image(
+                event,
+                output_path,
+                task_id=task["task_id"],
+                retry_count=task["retry_count"] + 1,
+            )
+            return
         if subcommand == "bug反馈":
             try:
                 self._check_access(event)
@@ -3014,7 +3437,7 @@ class NovelAIWebPlugin(star.Star):
                     return
             finally:
                 await self._leave_generation_queue()
-            yield event.image_result(str(output_path))
+            await self._deliver_generated_image(event, output_path)
             return
 
         if subcommand not in {"生成", "参考", "原始"}:
@@ -3201,7 +3624,7 @@ class NovelAIWebPlugin(star.Star):
                 + "、".join(unresolved_identities)
                 + "。本次已保留 DS4F 给出的候选与外观描述。"
             )
-        yield event.image_result(str(output_path))
+        await self._deliver_generated_image(event, output_path)
 
     async def _generate_from_api(
         self,
