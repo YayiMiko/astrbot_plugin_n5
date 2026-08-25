@@ -1971,13 +1971,17 @@ class NovelAIWebPlugin(star.Star):
         base_items = [
             item.strip()
             for item in base_prompt.split(",")
-            if item.strip() and not count_pattern.fullmatch(item.strip())
+            if item.strip()
+            and not count_pattern.fullmatch(item.strip())
+            and item.strip().casefold() != "solo"
         ]
         count_items = [
             f"{count}{subject if count == 1 else subject + 's'}"
             for subject in ("girl", "boy", "other")
             if (count := counts[subject])
         ]
+        if sum(counts.values()) == 1:
+            count_items.append("solo")
         return ", ".join((*count_items, *base_items))
 
     @staticmethod
@@ -3091,6 +3095,53 @@ class NovelAIWebPlugin(star.Star):
                         prompt_text,
                         character_prompts,
                     )
+                    if explicit_nudity:
+                        prompt_items = [
+                            item.strip()
+                            for item in prompt_text.split(",")
+                            if item.strip()
+                            and item.strip().casefold()
+                            not in {
+                                "nsfw",
+                                "rating:explicit",
+                                "rating:general",
+                                "rating:sensitive",
+                            }
+                        ]
+                        insert_at = next(
+                            (
+                                index + 1
+                                for index, item in enumerate(prompt_items)
+                                if re.search(
+                                    r"(?i)(?<![a-z])(?:nude|naked)(?![a-z])",
+                                    item,
+                                )
+                            ),
+                            1,
+                        )
+                        prompt_items[insert_at:insert_at] = ["rating:explicit", "nsfw"]
+                        prompt_text = ", ".join(prompt_items)
+                    if len(character_prompts) == 1:
+                        duplicate_guards = (
+                            "multiple girls",
+                            "multiple boys",
+                            "multiple views",
+                            "character sheet",
+                            "lineup",
+                            "duplicate",
+                        )
+                        negative_items = [
+                            item.strip()
+                            for item in negative_prompt.split(",")
+                            if item.strip()
+                        ]
+                        present_negative = {item.casefold() for item in negative_items}
+                        negative_items.extend(
+                            item
+                            for item in duplicate_guards
+                            if item.casefold() not in present_negative
+                        )
+                        negative_prompt = ", ".join(negative_items)
                     if selected_artist is not None:
                         prompt_text = f"{artist_content}, {prompt_text}"
                     if len(prompt_text) + sum(map(len, character_prompts)) > (

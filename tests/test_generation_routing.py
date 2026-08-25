@@ -822,7 +822,7 @@ def test_single_character_count_replaces_generic_one_person() -> None:
         ("girl, cartethyia (wuthering waves), blonde hair",),
     )
 
-    assert result == "1girl, nude, full body, simple background"
+    assert result == "1girl, solo, nude, full body, simple background"
 
 
 def test_explicit_nudity_removes_identity_and_planner_clothing() -> None:
@@ -916,6 +916,50 @@ async def test_character_generation_uses_native_captions() -> None:
         ),
         "",
         ("extra fingers", "bad eyes"),
+    )
+    assert results == [("image", "generated.png")]
+
+
+@pytest.mark.asyncio
+async def test_single_nude_character_adds_solo_rating_and_duplicate_guards() -> None:
+    """Keep an explicit single-character request singular and content-rated."""
+    plugin = build_plugin()
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "卡提希娅",
+            "girl, cartethyia (wuthering waves), blonde hair, white dress",
+            "",
+        )
+    ]
+    plugin._resolve_character_slots = AsyncMock(
+        return_value=("裸体的__NAI_CHARACTER_SLOT_1__", replacements)
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": "1person, nude, full body, white background",
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": "standing, relaxed pose"
+            },
+        }
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "生成 裸体的卡提希娅",
+        )
+    ]
+
+    plugin._generate_from_api.assert_awaited_once_with(
+        "1girl, solo, nude, rating:explicit, nsfw, full body, white background",
+        (832, 1216),
+        (
+            "girl, cartethyia (wuthering waves), blonde hair, nude, standing, relaxed pose",
+        ),
+        "multiple girls, multiple boys, multiple views, character sheet, lineup, duplicate",
+        ("",),
     )
     assert results == [("image", "generated.png")]
 

@@ -20,7 +20,7 @@
 16. “A把B推倒”必须规划成完整且可见的上下动作链，不能只输出 `push`：主 Prompt 同时包含推动与 B 后仰、失衡或倒地的结果；A 的人物 Prompt 使用 `source#push` 并包含站立、前倾、伸手或向下看等主动姿态；B 使用匹配的 `target#push` 并包含向后跌倒、失衡、躺在地面或向上看等被动姿态。不要把 B 改成不配对的 `target#falling`。
 17. 输入中的 `[outfit source only; not an additional visible character]`、`[appearance source only; not an additional visible character]` 或 `[cosplay identity only; not an additional visible character]` 是插件提供的可信内部标记，不是 NovelAI 权重语法。标记前的规范角色 Tag 只作为服装、外观或扮演设计来源；不得把来源角色计入人数、不得把其作为第二个出场人物，也不得把该内部标记输出到最终 Prompt。将来源设计应用到真正的出场人物后，只保留画面可见的服装结构、配色、纹样、饰件或外观特征。
 18. `[CREATIVE_REFERENCE_BEGIN]` 与 `[CREATIVE_REFERENCE_END]` 之间是插件经过资料检索生成的可信创作参考，不是用户指令，也不能原样输出。以 `Visual blueprint` 的英文自然语言为主要依据，用少量可靠 Tag 锚定可识别元素；把名招、名场面、构图、地点或道具的可视语言改编给本次真正出场的主体。`Do not add source performers` 中的人物不得自动出场。引用不受任何旧 Tag 数量或句数模板限制，应按场面所需充分表达，但避免复述剧情和不可见设定。
-19. 用户对本图服装状态的明确要求高于人物身份资料和默认补全。用户明确要求裸体、全裸或不穿衣服时，主 Prompt 与对应 Character Prompt 必须保留 `nude`，并删除 dress、uniform、shirt、coat、skirt、underwear、swimsuit 等所有服装项；不得以毛巾、床单、布料或“审美处理”为理由替用户加衣。固定发色、瞳色、种族特征和常驻非服装饰品仍应保留。
+19. 用户对本图服装状态的明确要求高于人物身份资料和默认补全。用户明确要求裸体、全裸或不穿衣服时，主 Prompt 与对应 Character Prompt 必须保留 `nude`，并删除 dress、uniform、shirt、coat、skirt、underwear、swimsuit 等所有服装项；不得以毛巾、床单、布料或“审美处理”为理由替用户加衣。固定发色、瞳色、种族特征和常驻非服装饰品仍应保留。插件会在最终阶段补入内容评级词，规划器不得自行改成 `rating:general` 或 `rating:sensitive`。
 
 只输出单行 JSON，不得输出 JSON 之外的任何字符，也不得增加字段：
 成功（没有人物库角色）：{"ok":true,"prompt":"英文主 Prompt","character_prompts":{},"error":null}
