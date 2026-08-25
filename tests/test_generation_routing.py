@@ -289,6 +289,29 @@ async def test_malformed_nai_command_never_reaches_default_llm() -> None:
 
 
 @pytest.mark.asyncio
+async def test_empty_n5_command_returns_copyable_examples() -> None:
+    """Explain generation modes with commands users can copy directly."""
+    plugin = build_plugin()
+    event = FakeEvent("/n5")
+
+    results = [result async for result in plugin.generate_image(event, "")]
+
+    assert event.call_llm is False
+    assert event.stopped is True
+    assert results == [
+        (
+            "plain",
+            "请输入生图描述。\n"
+            "示例：/n5 生成 雪夜车站里的银发少女\n"
+            "其他模式：\n"
+            "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
+            "/n5 原始 <Prompt>：跳过提示词优化\n"
+            "发送 /n5 help 查看完整帮助。",
+        )
+    ]
+
+
+@pytest.mark.asyncio
 async def test_explicit_nai_command_is_hard_routed_before_default_llm() -> None:
     """Intercept a private-chat slash command before normal conversation."""
     plugin = build_plugin("1girl, silver hair, train station, night")
