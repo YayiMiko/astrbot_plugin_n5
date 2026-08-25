@@ -392,7 +392,7 @@ async def plan_identities(
     }
 
     identities: list[PlannedIdentity] = []
-    for item in characters[:6]:
+    for item in characters[:22]:
         if not isinstance(item, dict):
             continue
         source_name = str(item.get("source_name") or "").strip()

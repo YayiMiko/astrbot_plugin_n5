@@ -127,6 +127,13 @@ PROMPT_PLANNER_SYSTEM_PROMPT_PATHS = (
         / "runtime-semantic-expansion.txt"
     ),
 )
+COMIC_PLANNER_SYSTEM_PROMPT_PATH = (
+    Path(__file__).resolve().parent
+    / "skills"
+    / "novelai-n5-prompt-planner"
+    / "references"
+    / "runtime-comic-mode.txt"
+)
 PROMPT_KNOWLEDGE_DIR = (
     Path(__file__).resolve().parent
     / "skills"
@@ -456,6 +463,7 @@ class NovelAIWebPlugin(star.Star):
             [
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
+                "/n5 漫画 <剧情> - 规划并生成完整的多格漫画页",
                 "/n5 参考 <修改要求> - 使用本条或引用消息中的图片",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 再来 - 复用自己上一次成功生成的最终 Prompt",
@@ -762,6 +770,8 @@ class NovelAIWebPlugin(star.Star):
         required_character_slots: tuple[str, ...] = (),
         image_urls: tuple[str, ...] = (),
         metadata_prompt: str = "",
+        *,
+        comic_mode: bool = False,
     ) -> PromptPlan:
         """Convert a user description into a validated NovelAI V5 prompt.
 
@@ -771,6 +781,7 @@ class NovelAIWebPlugin(star.Star):
             required_character_slots: Protected character keys found in the input.
             image_urls: Request-local images for native multimodal planning.
             metadata_prompt: Trusted NovelAI PNG metadata recovered from those images.
+            comic_mode: Whether to plan a complete multi-panel comic page.
 
         Returns:
             Validated base prompt and per-character dynamic prompts.
@@ -795,6 +806,16 @@ class NovelAIWebPlugin(star.Star):
         if not provider_id:
             raise NovelAIWebError("prompt_planner_provider_id 不能为空。")
         system_prompt = self._load_prompt_planner_system_prompt()
+        if comic_mode:
+            try:
+                comic_prompt = COMIC_PLANNER_SYSTEM_PROMPT_PATH.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError as exc:
+                raise NovelAIWebError("NovelAI 漫画规划规则无法读取。") from exc
+            if not comic_prompt:
+                raise NovelAIWebError("NovelAI 漫画规划规则为空。")
+            system_prompt += "\n\n" + comic_prompt
         if required_character_slots:
             allowed_slots = ", ".join(f"`{slot}`" for slot in required_character_slots)
             slot_contract = (
@@ -886,10 +907,15 @@ class NovelAIWebPlugin(star.Star):
             except NovelAIWebError as exc:
                 last_error = exc
                 if attempt < 2:
+                    retry_focus = (
+                        "逐格保留页面布局、阅读顺序、角色出场、动作、表情和对白；"
+                        if comic_mode
+                        else "逐项保留人数、主体、身份、主题服装、配饰、手持物、"
+                        "动作、关系和环境；"
+                    )
                     retry_prompt = (
                         f"上一次输出无效：{exc} 请重新规划以下原始描述，"
-                        "逐项保留人数、主体、身份、主题服装、配饰、手持物、"
-                        "动作、关系和环境；人物槽位的本图服装与道具必须写入"
+                        f"{retry_focus}人物槽位的本图服装与道具必须写入"
                         "对应 character_prompts，"
                         f"只返回协议规定的一行 JSON。{slot_contract}\n" + description
                     )
@@ -1032,7 +1058,7 @@ class NovelAIWebPlugin(star.Star):
                         ]
                         if (
                             len(normalized_prompts) == len(character_prompts)
-                            and len(normalized_prompts) <= 6
+                            and len(normalized_prompts) <= 22
                             and sum(map(len, normalized_prompts)) <= 20_000
                         ):
                             last_character_prompts_by_library[library_key] = (
@@ -1078,7 +1104,7 @@ class NovelAIWebPlugin(star.Star):
                         ]
                         if (
                             len(normalized_negative_prompts) == len(negative_prompts)
-                            and len(normalized_negative_prompts) <= 6
+                            and len(normalized_negative_prompts) <= 22
                             and sum(map(len, normalized_negative_prompts)) <= 20_000
                         ):
                             last_character_negative_prompts_by_library[library_key] = (
@@ -1753,8 +1779,8 @@ class NovelAIWebPlugin(star.Star):
             max_slots = int(self.config.get("max_characters_per_prompt", 4))
         except (TypeError, ValueError) as exc:
             raise NovelAIWebError("max_characters_per_prompt 必须是整数。") from exc
-        if not 1 <= max_slots <= 6:
-            raise NovelAIWebError("max_characters_per_prompt 配置必须在 1 到 6 之间。")
+        if not 1 <= max_slots <= 22:
+            raise NovelAIWebError("max_characters_per_prompt 配置必须在 1 到 22 之间。")
 
         library_key = self._character_library_key(event)
         async with self._character_state_lock:
@@ -1917,7 +1943,7 @@ class NovelAIWebPlugin(star.Star):
                 if not identity.verified:
                     warnings.append(identity.source_name)
                 continue
-            if len(replacements) >= max(0, min(max_slots, 6)):
+            if len(replacements) >= max(0, min(max_slots, 22)):
                 continue
             slot = f"__NAI_CHARACTER_SLOT_{len(replacements) + 1}__"
             name_pattern = re.compile(re.escape(identity.source_name), re.IGNORECASE)
@@ -3452,21 +3478,25 @@ class NovelAIWebPlugin(star.Star):
             await self._deliver_generated_image(event, output_path)
             return
 
-        if subcommand not in {"生成", "参考", "原始"}:
+        if subcommand not in {"生成", "漫画", "参考", "原始"}:
             yield event.plain_result(
                 "请输入生图描述。\n"
                 "示例：/n5 生成 雪夜车站里的银发少女\n"
                 "其他模式：\n"
+                "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
                 "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
                 "/n5 原始 <Prompt>：跳过提示词优化\n"
                 "发送 /n5 help 查看完整帮助。"
             )
             return
         prompt_text = arguments
+        comic_mode = subcommand == "漫画"
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
-        if not is_direct_prompt and not NATURAL_LANGUAGE_SCRIPT_PATTERN.search(
-            prompt_text
+        if (
+            not is_direct_prompt
+            and not comic_mode
+            and not NATURAL_LANGUAGE_SCRIPT_PATTERN.search(prompt_text)
         ):
             is_direct_prompt = bool(NOVELAI_PROMPT_SIGNAL_PATTERN.search(prompt_text))
             if not is_direct_prompt and len(prompt_parts) >= 2:
@@ -3485,7 +3515,7 @@ class NovelAIWebPlugin(star.Star):
             self._check_access(event)
             max_prompt_length = int(self.config.get("max_prompt_length", 4000))
             if not prompt_text:
-                raise NovelAIWebError("用法：/n5 生成 <内容>")
+                raise NovelAIWebError(f"用法：/n5 {subcommand} <内容>")
             if not 1 <= max_prompt_length <= 20_000:
                 raise NovelAIWebError("max_prompt_length 配置必须在 1 到 20000 之间。")
             if len(prompt_text) > max_prompt_length:
@@ -3551,6 +3581,7 @@ class NovelAIWebPlugin(star.Star):
                             tuple(slot for slot, _, _, _ in character_replacements),
                             image_context.image_urls,
                             image_context.metadata_prompt,
+                            comic_mode=comic_mode,
                         )
                     else:
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)
@@ -3578,11 +3609,29 @@ class NovelAIWebPlugin(star.Star):
                             character_replacements
                         )
                     )
-                    prompt_text = self._apply_character_subject_counts(
-                        prompt_text,
-                        character_prompts,
-                    )
-                    if len(character_prompts) == 1:
+                    if comic_mode:
+                        comic_negative_conflicts = {
+                            "comic",
+                            "comic strip",
+                            "manga",
+                            "panel",
+                            "panels",
+                            "multiple views",
+                            "duplicate",
+                            "frame",
+                            "border",
+                        }
+                        negative_prompt = ", ".join(
+                            item.strip()
+                            for item in negative_prompt.split(",")
+                            if item.strip().casefold() not in comic_negative_conflicts
+                        )
+                    else:
+                        prompt_text = self._apply_character_subject_counts(
+                            prompt_text,
+                            character_prompts,
+                        )
+                    if not comic_mode and len(character_prompts) == 1:
                         duplicate_guards = (
                             "multiple girls",
                             "multiple boys",
@@ -3712,8 +3761,8 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError("已拒绝请求：当前账号不是有效的 NovelAI Opus。")
 
         negative_prompt = self._normalize_negative_prompt(negative_prompt)
-        if len(character_prompts) > 6:
-            raise NovelAIWebError("当前插件一次最多支持 6 个人物 Prompt。")
+        if len(character_prompts) > 22:
+            raise NovelAIWebError("当前插件一次最多支持 22 个人物 Prompt。")
         if len(character_negative_prompts) != len(character_prompts):
             raise NovelAIWebError("人物正面与负面 Prompt 数量不一致。")
         normalized_character_negative_prompts = tuple(

@@ -17,6 +17,20 @@
       "sources": ["official-v5-release"]
     },
     {
+      "id": "v5-comic-page-planning",
+      "scope": "comic_generation",
+      "enforcement": "llm",
+      "instruction": "NovelAI V5 can generate a complete multi-panel comic page from natural-language layout descriptions and Character Prompts. Specify page layout, panel order, panel contents, and character participation explicitly.",
+      "sources": ["official-v5-release"]
+    },
+    {
+      "id": "v5-character-capacity",
+      "scope": "character_prompt",
+      "enforcement": "deterministic",
+      "instruction": "NovelAI V5 has demonstrated up to 22 distinct Character Prompts in one scene; reject more than 22 captions in one API request.",
+      "sources": ["official-v5-release"]
+    },
+    {
       "id": "subject-count-in-base",
       "scope": "subject_count",
       "enforcement": "deterministic",
