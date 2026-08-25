@@ -1,6 +1,6 @@
 # astrbot_plugin_n5
 
-一个独立的 **AstrBot** 插件，通过 **NovelAI 官方 API** 生成 **NovelAI Diffusion V5 Curated** 图片。它把前端提示词改为「请求级 DS4F Vision 多模态规划 + NovelAI 官方身份词表校验」，让自然语言描述能稳定落地成可执行的 V5 Prompt。
+一个独立的 **AstrBot** 插件，通过 **NovelAI 官方 API** 生成 **NovelAI Diffusion V5 Curated / Full** 图片。它把前端提示词改为「请求级 DS4F Vision 多模态规划 + NovelAI 官方身份词表校验」，让自然语言描述能稳定落地成可执行的 V5 Prompt。
 
 ---
 
@@ -17,6 +17,7 @@
 - **负面提示词**：每个用户可独立设置自己的 Undesired Content。
 - **全局 NSFW 语义方向**：所有生图请求保留字面 `nsfw`，同时删除 `rating:` 内容分级词；具体细节由规划器按用户意图决定，不套用固定 Tag 包。
 - **每用户生成尺寸**：竖图 / 横图 / 方图 / 自定义尺寸。
+- **V5 模型切换**：WebUI 下拉设置默认模型，聊天中可按用户切换 V5C / V5F。
 - **免费生成防护**：Opus 身份校验、总像素上限、Steps 上限、响应大小上限，以及 429 排队重试。
 - **队列与并发控制**：串行生成 + 排队计数，避免并发打爆账号。
 - **Bug 反馈**：`/n5 bug反馈`，反馈会记录并私聊通知管理员。
@@ -65,6 +66,7 @@ pip install -r requirements.txt
 | `max_total_pixels` | 免费生成总像素上限 | `1048576` |
 | `max_steps` | 免费生成 Steps 上限 | `28` |
 | `steps` | NovelAI API 生成 Steps（Opus 免费生成不得超过 `max_steps`） | `23` |
+| `image_model` | 默认绘图模型，可在 WebUI 下拉选择 V5C / V5F | `nai-diffusion-5-curated` |
 | `negative_prompt` | 兼容用默认 Undesired Content（默认留空） | `""` |
 | `default_artist_string_name` | 全局默认画风名称 | `千代NAI1` |
 | `default_artist_string` | 全局默认画师串 | `artist:deyui, artist:yukisiannn, ...` |
@@ -122,6 +124,7 @@ python scripts/configure_pat.py
 | `/n5 画风 [名称\|默认\|原生]` | 查看或切换画风（等价 `画师串` / `切换画师串` / `查看画师串`） |
 | `/n5 负面` | 查看自己的当前负面提示词 |
 | `/n5 负面 <内容>\|清空` | 设置或清空自己的负面提示词 |
+| `/n5 模型 [V5C\|V5F]` | 查看或切换自己的 NovelAI V5 绘图模型 |
 | `/n5 尺寸 竖图\|横图\|方图\|<宽>x<高>` | 设置免费尺寸（等价 `切换大小` / `自定义大小`） |
 | `/n5 状态` | 检查 PAT、Opus、Anlas 与免费生成参数 |
 | `/n5 诊断` | 显示当前模型、指令路由与图片来源策略 |
