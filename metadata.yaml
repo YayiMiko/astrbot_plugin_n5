@@ -1,7 +1,7 @@
 name: astrbot_plugin_n5
 display_name: NovelAI N5 Multimodal Generator
 desc: Generate NovelAI V5 images with DS4F Vision planning and official tag identity locks.
-author: yzxzc
+author: YayiMiko
 version: 0.1.0
 repo: https://github.com/YayiMiko/astrbot_plugin_n5
 astrbot_version: ">=4.26,<5"

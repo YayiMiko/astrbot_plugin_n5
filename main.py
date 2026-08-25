@@ -254,7 +254,7 @@ class NovelAIWebError(Exception):
 
 @star.register(
     PLUGIN_NAME,
-    "yzxzc",
+    "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
     "0.1.0",
 )
