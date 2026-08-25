@@ -77,7 +77,7 @@
     "description": "启用 DeepSeek Prompt 规划",
     "type": "bool",
     "default": true,
-    "hint": "开启后仅自然语言描述会交给 DeepSeek 规划；现成的 NovelAI 标签 Prompt 会原样直通。"
+    "hint": "开启后仅自然语言描述会交给 DeepSeek 规划；现成标签会跳过规划，仅应用全局 nsfw 与取消内容分级。"
   },
   "prompt_planner_provider_id": {
     "description": "Prompt 规划模型 Provider ID",

@@ -2,7 +2,7 @@
 
 ## 推荐系统提示
 
-插件运行时只对自然语言描述调用规划器。它先加载 `knowledge/source-manifest.json`、`knowledge/official-rules.json` 和 `knowledge/local-preferences.json`，验证模型、来源与执行级别，再按顺序拼接 `runtime-system-prompt.txt` 与 `runtime-semantic-expansion.txt`。已经包含 NovelAI 标签、权重或画师字段的 Prompt 必须跳过模型并原样直通。用户原始画面描述放入单独 user message。不要在代码中复制这些规则。
+插件运行时只对自然语言描述调用规划器。它先加载 `knowledge/source-manifest.json`、`knowledge/official-rules.json` 和 `knowledge/local-preferences.json`，验证模型、来源与执行级别，再按顺序拼接 `runtime-system-prompt.txt` 与 `runtime-semantic-expansion.txt`。已经包含 NovelAI 标签、权重或画师字段的 Prompt 必须跳过模型；在 API 前全局补入一次 `nsfw` 并删除所有 `rating:` 分级词，其余内容直通。用户原始画面描述放入单独 user message。不要在代码中复制这些规则。
 
 ## 调用建议
 
