@@ -2,8 +2,6 @@
 
 一个独立的 **AstrBot** 插件，通过 **NovelAI 官方 API** 生成 **NovelAI Diffusion V5 Curated** 图片。它保留了官方生成链路，把前端提示词改为「请求级 DS4F Vision 多模态规划 + NovelAI 官方身份词表校验」，让自然语言描述能稳定落地成可执行的 V5 Prompt。
 
-> 说明：本插件只注册 `/n5` 指令，**不会**注册 `/nai` 别名；只走 NovelAI 官方 API，不做浏览器自动化、登录、排队或图片下载。
-
 ---
 
 ## 功能特性
