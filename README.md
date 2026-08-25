@@ -1,52 +1,184 @@
 # astrbot_plugin_n5
 
-An independent AstrBot plugin for NovelAI Diffusion V5 Curated. It keeps the
-official NovelAI API generation path while replacing the prompt front end with
-request-scoped DS4F Vision planning and NovelAI-native character tag checks.
+一个独立的 **AstrBot** 插件，通过 **NovelAI 官方 API** 生成 **NovelAI Diffusion V5 Curated** 图片。它保留了官方生成链路，把前端提示词改为「请求级 DS4F Vision 多模态规划 + NovelAI 官方身份词表校验」，让自然语言描述能稳定落地成可执行的 V5 Prompt。
 
-## Design
+> 说明：本插件只注册 `/n5` 指令，**不会**注册 `/nai` 别名；只走 NovelAI 官方 API，不做浏览器自动化、登录、排队或图片下载。
 
-- Exact `/n5` routing only. The plugin deliberately does not register `/nai`.
-- Direct image first, quoted image second, and no shared `latest` image fallback.
-- NovelAI PNG metadata is read before visual inference when available.
-- DS4F Vision extracts named identities and reference-image appearance.
-- NovelAI `suggest-tags` is the primary identity vocabulary authority.
-- Existing tag prompts can bypass planning with `/n5 原始`.
-- The proven V5 payload, Opus guard, free-generation limits, queue, ZIP parsing,
-  artist presets, character presets, negative prompts, and per-user sizes remain.
+---
 
-## Commands
+## 功能特性
 
-```text
-/n5 生成 <description>
-/n5 参考 <change request>
-/n5 原始 <NovelAI prompt>
-/n5 再来
-/n5 角色 [name]
-/n5 画风 [name|默认|原生]
-/n5 负面 [prompt|清空]
-/n5 尺寸 竖图|横图|方图|<width>x<height>
-/n5 状态
-/n5 诊断
+- **多模态提示词规划**：自然语言描述由 DeepSeek（默认 `deepseek/deepseek-v4-flash-vision-exp`）规划为标签 + 自然语言的混合 Prompt，支持原生图片输入（`/n5 参考`）。
+- **官方身份词表锁定**：用 NovelAI `suggest-tags` 作为角色身份的权威词表，只有精确匹配的规范标签才会被采纳；其余候选与外观描述会保留但标记为「未确认」。
+- **图源解析**：优先读取本条消息中的图片，其次读取引用消息中的图片；**不使用**全局 `latest` 回退。
+- **NovelAI PNG 元数据优先**：带图请求会先读取 PNG 内嵌的 `Description` / `Comment` 元数据，身份事实优先于视觉猜测。
+- **人物库**：群成员可保存「全局人物」，命中角色名时自动注入固定身份与固有外观，再由规划器补全本图服装、道具与动态。
+- **画师串**：预设与切换画师串（`artist:` 风格串），由插件在最终 Prompt 前独立拼接，规划器不知道也不会生成画师串。
+- **负面提示词**：每个用户可独立设置自己的 Undesired Content。
+- **每用户生成尺寸**：竖图 / 横图 / 方图 / 自定义尺寸。
+- **免费生成防护**：Opus 身份校验、总像素上限、Steps 上限、响应大小上限，以及 429 排队重试。
+- **队列与并发控制**：串行生成 + 排队计数，避免并发打爆账号。
+- **Bug 反馈**：`/n5 bug反馈`，反馈会记录并私聊通知管理员。
+- **旧插件迁移**：首次启动时自动复制旧插件 `astrbot_plugin_novelai` 的兼容数据。
+
+---
+
+## 工作原理
+
+1. 用户发送 `/n5 生成 <描述>`，插件按「本条图片 → 引用图片」的优先级解析请求级图片与 NovelAI PNG 元数据。
+2. 若输入是现成的 NovelAI 标签 Prompt（或使用 `/n5 原始`），则**跳过自然语言规划**，原样直通。
+3. 否则把描述交给独立 Provider 的 DeepSeek 规划器，输出严格单行 JSON：`{"ok":true,"prompt":"...","character_prompts":{...},"error":null}`。
+4. 插件校验规划结果：拒绝画师字段、人物占位符泄漏、长度超限、互斥约束无法消解等；并对「画师」这类职业主体强制补全视觉锚点（如 `painter, holding paintbrush, canvas`）。
+5. 命中人物库角色时，把角色名替换为 `__NAI_CHARACTER_SLOT_<数字>__` 槽位，规划器只负责该角色的本图动态 Prompt，固定身份与固有外观由人物库注入。
+6. 最终按「当前画师串 + 主 Prompt」拼接，调用 NovelAI 官方 `/ai/generate-image`，解析 ZIP / JSON / SSE 返回的图片，校验尺寸一致后保存。
+
+---
+
+## 安装
+
+> 当前版本 `0.1.0`，要求 AstrBot `>=4.26, <5`，支持平台 `aiocqhttp`（QQ OneBot）。
+
+将本仓库放入 AstrBot 的 `data/plugins/` 目录（或按 AstrBot 插件规范安装），并安装依赖：
+
+```bash
+pip install -r requirements.txt
 ```
 
-Advanced preset mutation remains available under `/n5 添加画师串`,
-`/n5 创建人物`, `/n5 删除人物`, and `/n5 确认`.
+依赖：`httpx>=0.27,<1`；`Pillow` 由 AstrBot 自带。
 
-## Configuration
+---
 
-Set `NOVELAI_API_TOKEN` in the AstrBot runtime environment. Restrict callers
-with `allowed_sender_ids`; `allow_group=true` plus an empty
-`allowed_group_ids` list enables authorized users in every group.
+## 配置
 
-The default prompt provider is
-`deepseek/deepseek-v4-flash-vision-exp`. It must support native image input for
-`/n5 参考`.
+在 AstrBot 的插件配置面板中设置以下参数（均有默认值）：
 
-## Development
+| 参数 | 说明 | 默认 |
+|---|---|---|
+| `allowed_sender_ids` | 允许使用 NovelAI 的 QQ 白名单；**留空时拒绝所有指令** | `[]` |
+| `bug_report_admin_ids` | Bug 反馈私聊通知的 QQ 列表；留空时回退到控制者白名单 | `[]` |
+| `allow_group` | 是否允许群聊触发（总开关） | `false` |
+| `allowed_group_ids` | 允许使用 NovelAI 的群号白名单；留空时所有群开放 | `[]` |
+| `max_total_pixels` | 免费生成总像素上限 | `1048576` |
+| `max_steps` | 免费生成 Steps 上限 | `28` |
+| `steps` | NovelAI API 生成 Steps（Opus 免费生成不得超过 `max_steps`） | `23` |
+| `negative_prompt` | 兼容用默认 Undesired Content（默认留空） | `""` |
+| `default_artist_string_name` | 全局默认画风名称 | `千代NAI1` |
+| `default_artist_string` | 全局默认画师串 | `artist:deyui, artist:yukisiannn, ...` |
+| `quality_toggle` | 是否使用 NovelAI 自动质量标签（NAI5 默认关闭） | `false` |
+| `uc_preset` | NovelAI UC Preset 编号（`3`=None，仅用 `/n5 负面`） | `3` |
+| `max_prompt_length` | Prompt 最大字符数 | `4000` |
+| `prompt_planner_enabled` | 是否启用 DeepSeek Prompt 规划 | `true` |
+| `prompt_planner_provider_id` | Prompt 规划模型 Provider ID | `deepseek/deepseek-v4-flash-vision-exp` |
+| `max_character_prompt_length` | 单个人物 Prompt 最大字符数 | `2000` |
+| `max_characters_per_prompt` | 单次描述自动引用人物的上限（`1`–`6`） | `4` |
+| `timeout_seconds` | 等待 NovelAI API 生成的超时秒数 | `180` |
+| `rate_limit_max_retries` | 429 最大排队重试次数 | `8` |
+| `rate_limit_wait_seconds` | 429 固定重试间隔秒数 | `5` |
+| `max_response_bytes` | NovelAI API 响应最大字节数 | `16777216` |
+| `max_image_bytes` | 返回 QQ 的单图最大字节数 | `33554432` |
+| `max_image_pixels` | 结果图最大总像素 | `16777216` |
+
+> 说明：`prompt_planner_provider_id` 与群聊默认模型相互独立。它必须支持原生图片输入（`/n5 参考` 需要）。
+
+---
+
+## 认证
+
+插件需要一个 **NovelAI 持久化 API Token（PAT）**，两种方式二选一：
+
+**方式一：环境变量（推荐，Linux / 容器）**
+
+```bash
+export NOVELAI_API_TOKEN="pst-你的token"
+```
+
+**方式二：Windows DPAPI 加密文件**
+
+Windows 下用随附脚本把 PAT 用 DPAPI 加密存储，避免明文落盘：
+
+```bash
+python scripts/configure_pat.py
+```
+
+运行后会生成 `data/plugin_data/astrbot_plugin_n5/novelai_pat.dpapi`。
+
+> 注意：`/n5` 的免费生成路径要求当前账号为**有效的 NovelAI Opus**（`tier=3` 且 `active`），否则会被拒绝。
+
+---
+
+## 指令列表
+
+| 指令 | 说明 |
+|---|---|
+| `/n5 生成 <内容>` | 自然语言扩写；附图时使用 DS4F Vision 参考 |
+| `/n5 参考 <修改要求>` | 使用本条或引用消息中的图片作参考 |
+| `/n5 原始 <Prompt>` | 跳过自然语言规划，原样生成 |
+| `/n5 再来` | 复用自己上一次成功生成的最终 Prompt（等价 `/n5 重抽`） |
+| `/n5 角色 [名称]` | 列出或查看自己的角色（等价 `/n5 人物`） |
+| `/n5 画风 [名称\|默认\|原生]` | 查看或切换画风（等价 `画师串` / `切换画师串` / `查看画师串`） |
+| `/n5 负面` | 查看自己的当前负面提示词 |
+| `/n5 负面 <内容>\|清空` | 设置或清空自己的负面提示词 |
+| `/n5 尺寸 竖图\|横图\|方图\|<宽>x<高>` | 设置免费尺寸（等价 `切换大小` / `自定义大小`） |
+| `/n5 状态` | 检查 PAT、Opus、Anlas 与免费生成参数 |
+| `/n5 诊断` | 显示模型、指令路由与隔离策略 |
+| `/n5 bug反馈 <内容>` | 记录 Bug 反馈并通知管理员 |
+
+**画师串与人物库管理：**
+
+| 指令 | 说明 |
+|---|---|
+| `/n5 添加画师串 <名称> <内容>` | 保存本群画师串 |
+| `/n5 创建人物 <角色名> <Prompt> [--负面 <内容>]` | 保存全局人物，命中名字时自动引用 |
+| `/n5 删除人物 <角色名>` | 删除全局人物 |
+| `/n5 确认` | 在 60 秒内确认「覆盖 / 删除人物」操作 |
+
+---
+
+## 权限控制
+
+插件默认**失败即关闭**（fail-closed）：
+
+- 只有 `allowed_sender_ids` 白名单中的 QQ 才能执行 NovelAI 指令，私聊和群聊统一校验；**列表留空时拒绝所有指令**。
+- `allow_group=false` 时禁止群聊使用。
+- 群聊中即使开启了 `allow_group`，也仍只允许 `allowed_sender_ids` 中的账号执行。
+- `allowed_group_ids` 留空时允许所有群，非空时只放行白名单群号。
+
+---
+
+## 使用示例
+
+```text
+/n5 生成 一位银发蓝眼的成年女性穿白色长外套，夜晚站在下雪的街道上
+/n5 参考 把背景改成雨夜的霓虹街道（配合一张参考图）
+/n5 原始 1girl, silver hair, blue eyes, solo, standing, white long coat
+/n5 画风 千代NAI1
+/n5 画风 原生
+/n5 尺寸 竖图
+/n5 状态
+```
+
+---
+
+## 常见问题
+
+- **提示「当前 QQ 不在白名单」**：在 AstrBot 配置中把 QQ 号加入 `allowed_sender_ids`。
+- **提示「不是有效的 NovelAI Opus」**：免费生成路径只对有效的 Opus（`tier=3`）开放。
+- **提示「未配置 PAT」**：设置 `NOVELAI_API_TOKEN` 环境变量，或用 `configure_pat.py` 生成 DPAPI 文件。
+- **`/n5 参考` 不生效**：该指令需要本条消息或引用消息中带有图片，且规划模型必须支持原生图片输入。
+- **Prompt 规划失败**：检查 `prompt_planner_provider_id` 是否可用；规划器默认三次重试，超时或 JSON 无效时会提示「Prompt 规划暂时失败」，不会把未经校验的模型回复当作 Prompt。
+
+---
+
+## 开发
 
 ```bash
 uv run pytest -q
 uv run ruff format .
 uv run ruff check .
 ```
+
+---
+
+## 免责声明
+
+本插件为个人创作工具，仅通过 NovelAI 官方 API 生成图片，请遵守 NovelAI 的服务条款与所在地法律法规。生成的图片版权归对应作者与平台所有，请勿用于任何侵权或违规用途。
