@@ -1320,10 +1320,14 @@ class NovelAIWebPlugin(star.Star):
                 )
                 if comic_mode and comic_storyboard:
                     storyboard_payload = json.loads(comic_storyboard)
-                    expected_rendered_texts = [
-                        str(element["content"])
+                    storyboard_text_elements = [
+                        (int(panel["panel"]), element)
                         for panel in storyboard_payload.get("panels", [])
                         for element in panel.get("text_elements", [])
+                    ]
+                    expected_rendered_texts = [
+                        str(element["content"])
+                        for _, element in storyboard_text_elements
                     ]
                     planner_text_block = COMIC_TEXT_BLOCK_PATTERN.search(plan["prompt"])
                     if (
@@ -1338,6 +1342,47 @@ class NovelAIWebPlugin(star.Star):
                             "[n5] Removed redundant planner Text block; "
                             "the plugin will append canonical storyboard text."
                         )
+                    if comic_text_allowed and expected_rendered_texts:
+                        plan["prompt"] = (
+                            plan["prompt"].replace("“", '"').replace("”", '"')
+                        )
+                        quoted_matches = list(
+                            re.finditer(r'"([^"\r\n]*)"', plan["prompt"])
+                        )
+                        prompt_parts: list[str] = []
+                        prompt_cursor = 0
+                        for quote_index, match in enumerate(quoted_matches):
+                            prompt_parts.append(
+                                plan["prompt"][prompt_cursor : match.start()]
+                            )
+                            if quote_index < len(expected_rendered_texts):
+                                prompt_parts.append(
+                                    f'"{expected_rendered_texts[quote_index]}"'
+                                )
+                            prompt_cursor = match.end()
+                        prompt_parts.append(plan["prompt"][prompt_cursor:])
+                        plan["prompt"] = "".join(prompt_parts)
+                        for panel_number, element in storyboard_text_elements[
+                            len(quoted_matches) :
+                        ]:
+                            plan["prompt"] += (
+                                f". Panel {panel_number} includes a visible "
+                                f"{element['kind']} at {element['placement']}, "
+                                f"styled as {element['style']}, reading exactly "
+                                f'"{element["content"]}"'
+                            )
+                        plan["prompt"] = plan["prompt"].replace('""', "")
+                        if (
+                            len(plan["prompt"])
+                            + sum(
+                                len(value)
+                                for value in plan["character_prompts"].values()
+                            )
+                            > max_length
+                        ):
+                            raise NovelAIWebError(
+                                "插件补全漫画可见文字后 Prompt 超过长度上限。"
+                            )
                     expected_panels = [
                         int(panel["panel"])
                         for panel in storyboard_payload.get("panels", [])

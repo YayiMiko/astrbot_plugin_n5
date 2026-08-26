@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import importlib.util
 import json
+import re
 import sys
 import zipfile
 from io import BytesIO
@@ -1054,6 +1055,71 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
     assert plan["prompt"].startswith("comic, 4koma")
     assert plan["prompt"].endswith("Panel 4 shows her leaving.")
     assert plugin.context.llm_generate.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_comic_planner_canonicalizes_changed_or_missing_visible_text() -> None:
+    """Use the validated storyboard as authority for every rendered string."""
+    storyboard_payload = json.loads(STORYBOARD_JSON)
+    storyboard_payload["panels"][0]["text_elements"] = [
+        {
+            "kind": "title",
+            "content": "樱花树下的告白",
+            "speaker": "",
+            "placement": "page top center",
+            "style": "large white lettering with a pink outline",
+        }
+    ]
+    storyboard_payload["panels"][1]["text_elements"] = [
+        {
+            "kind": "dialogue",
+            "content": "我喜欢你……",
+            "speaker": "first character",
+            "placement": "speech bubble above the first character",
+            "style": "thin black text in a white bubble",
+        }
+    ]
+    response = Mock(
+        completion_text=json.dumps(
+            {
+                "ok": True,
+                "prompt": (
+                    "comic page. Panel 1 establishes the cherry avenue with a "
+                    "page title “错误标题”. Panel 2 shows the confession and a "
+                    "speech bubble. Panel 3 shows the reply. Panel 4 shows an embrace."
+                ),
+                "character_prompts": {},
+                "error": None,
+            },
+            ensure_ascii=False,
+        )
+    )
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_enabled": True,
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    plugin.context = Mock()
+    plugin.context.llm_generate = AsyncMock(return_value=response)
+
+    plan = await plugin._plan_prompt(
+        "画一页樱花树下告白的四格漫画",
+        4000,
+        comic_mode=True,
+        comic_storyboard=json.dumps(
+            storyboard_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        ),
+    )
+
+    assert plugin.context.llm_generate.await_count == 1
+    assert "错误标题" not in plan["prompt"]
+    assert re.findall(r'"([^"\r\n]+)"', plan["prompt"]) == [
+        "樱花树下的告白",
+        "我喜欢你……",
+    ]
+    assert "Panel 2 includes a visible dialogue" in plan["prompt"]
 
 
 @pytest.mark.asyncio
