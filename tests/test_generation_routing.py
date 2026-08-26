@@ -27,6 +27,30 @@ assert SPEC is not None and SPEC.loader is not None
 MODULE = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(MODULE)
 
+STORYBOARD_JSON = json.dumps(
+    {
+        "page_layout": "vertical four-panel page",
+        "reading_order": "top to bottom",
+        "visual_continuity": "same clothes, location, props, and light",
+        "panels": [
+            {
+                "panel": number,
+                "beat": f"beat {number}",
+                "shot": "medium shot",
+                "camera": "eye level",
+                "composition": "clear subject and prop placement",
+                "characters": [],
+                "action": f"visible action {number}",
+                "state_change": f"visible change {number}",
+                "dialogue": [],
+            }
+            for number in range(1, 5)
+        ],
+    },
+    ensure_ascii=False,
+    separators=(",", ":"),
+)
+
 
 class FakeEvent:
     """Return inspectable results without constructing an AstrBot event."""
@@ -192,6 +216,7 @@ def build_plugin(
     plugin._plan_prompt = AsyncMock(
         return_value={"prompt": planned_prompt, "character_prompts": {}},
     )
+    plugin._plan_comic_storyboard = AsyncMock(return_value=STORYBOARD_JSON)
     plugin._restore_character_slots = Mock(side_effect=lambda prompt, _items: prompt)
     plugin._generate_from_api = AsyncMock(return_value=Path("generated.png"))
     plugin._remember_last_prompt = AsyncMock()
@@ -256,6 +281,7 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
     ]
 
     plugin._plan_prompt.assert_not_awaited()
+    plugin._plan_comic_storyboard.assert_not_awaited()
     plugin._generate_from_api.assert_awaited_once_with(
         f"nsfw, {prompt}",
         (832, 1216),
@@ -281,6 +307,7 @@ async def test_natural_language_still_uses_planner() -> None:
     ]
 
     plugin._plan_prompt.assert_awaited_once()
+    plugin._plan_comic_storyboard.assert_not_awaited()
     plugin._generate_from_api.assert_awaited_once_with(
         "nsfw, 1girl, eating ice cream, happy",
         (832, 1216),
@@ -409,7 +436,16 @@ async def test_comic_draw_mode_invents_story_for_multiple_saved_characters() -> 
         "comic_mode": True,
         "comic_draw_mode": True,
         "comic_draw_plot_seed": "",
+        "comic_storyboard": STORYBOARD_JSON,
     }
+    assert plugin._plan_comic_storyboard.await_args.kwargs == {
+        "comic_draw_mode": True,
+        "comic_draw_plot_seed": "",
+    }
+    assert plugin._plan_comic_storyboard.await_args.args[1] == (
+        "__NAI_CHARACTER_SLOT_1__",
+        "__NAI_CHARACTER_SLOT_2__",
+    )
     generated_call = plugin._generate_from_api.await_args
     assert "Panel 1" in generated_call.args[0]
     assert "Panel 4" in generated_call.args[0]
@@ -465,6 +501,9 @@ async def test_comic_draw_mode_extracts_user_plot_after_cast() -> None:
     ]
 
     assert plugin._plan_prompt.await_args.kwargs["comic_draw_plot_seed"] == "抢夺包子"
+    assert plugin._plan_comic_storyboard.await_args.kwargs[
+        "comic_draw_plot_seed"
+    ] == "抢夺包子"
     assert results == []
 
 
@@ -960,7 +999,8 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
     response = Mock(
         completion_text=(
             '{"ok":true,"prompt":"comic, 4koma. Panel 1 shows a fox girl. '
-            'Text: Good morning!","character_prompts":{},"error":null}'
+            "Text: Good morning! Panel 2 shows breakfast. Panel 3 shows a "
+            'rush. Panel 4 shows her leaving.","character_prompts":{},"error":null}'
         )
     )
     plugin.context = Mock()
@@ -970,13 +1010,88 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
         "画一页狐娘起床的四格漫画",
         4000,
         comic_mode=True,
+        comic_storyboard=STORYBOARD_JSON,
     )
 
     system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "本次请求使用 NovelAI V5 漫画模式" in system_prompt
     assert "Text: 原文" in system_prompt
     assert "不得加入 `solo`" in system_prompt
+    planner_prompt = plugin.context.llm_generate.await_args.kwargs["prompt"]
+    assert "[COMIC_STORYBOARD_BEGIN]" in planner_prompt
+    assert '"shot":"medium shot"' in planner_prompt
     assert plan["prompt"].startswith("comic, 4koma")
+
+
+def test_storyboard_parser_validates_sequential_panels_and_cast() -> None:
+    """Accept a complete storyboard with only the request-scoped cast."""
+    slot = "__NAI_CHARACTER_SLOT_1__"
+    payload = json.loads(STORYBOARD_JSON)
+    for panel in payload["panels"]:
+        panel["characters"] = [slot]
+    payload["ok"] = True
+
+    storyboard = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+        json.dumps(payload, ensure_ascii=False),
+        (slot,),
+        exact_four_panels=True,
+    )
+
+    assert len(storyboard["panels"]) == 4
+    assert storyboard["panels"][0]["characters"] == [slot]
+
+
+def test_storyboard_parser_rejects_foreign_cast_slot() -> None:
+    """Reject a storyboard that silently introduces another identity."""
+    payload = json.loads(STORYBOARD_JSON)
+    payload["ok"] = True
+    payload["panels"][0]["characters"] = ["__NAI_CHARACTER_SLOT_2__"]
+
+    with pytest.raises(MODULE.NovelAIWebError, match="请求之外"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            json.dumps(payload, ensure_ascii=False),
+            ("__NAI_CHARACTER_SLOT_1__",),
+            exact_four_panels=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_comic_storyboard_retries_then_returns_compact_json() -> None:
+    """Retry an incomplete draw storyboard before prompt translation."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    slot = "__NAI_CHARACTER_SLOT_1__"
+    complete = json.loads(STORYBOARD_JSON)
+    complete["ok"] = True
+    for panel in complete["panels"]:
+        panel["characters"] = [slot]
+    plugin.context = Mock()
+    plugin.context.llm_generate = AsyncMock(
+        side_effect=[
+            Mock(completion_text='{"ok":true,"panels":[]}'),
+            Mock(completion_text=json.dumps(complete, ensure_ascii=False)),
+        ]
+    )
+
+    storyboard = await plugin._plan_comic_storyboard(
+        slot,
+        (slot,),
+        comic_draw_mode=True,
+        comic_draw_plot_seed="抢夺包子",
+    )
+
+    assert plugin.context.llm_generate.await_count == 2
+    assert all(
+        call.kwargs["temperature"] == 0.7
+        for call in plugin.context.llm_generate.await_args_list
+    )
+    assert "抢夺包子" in plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
+    assert "上一次分镜无效" in plugin.context.llm_generate.await_args_list[1].kwargs[
+        "prompt"
+    ]
+    assert json.loads(storyboard)["panels"][3]["panel"] == 4
 
 
 @pytest.mark.asyncio
