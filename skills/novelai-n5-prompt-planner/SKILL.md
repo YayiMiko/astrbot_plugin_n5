@@ -31,6 +31,8 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 
 `/n5 漫画` 是独立规划模式。该模式追加读取 [references/runtime-comic-mode.txt](references/runtime-comic-mode.txt)，允许同一角色跨格重复出现，并把页面布局、阅读顺序、逐格事件和短对白组织进同一份 V5 Prompt；普通单图模式不继承这些例外。
 
+`/n5 漫画抽卡` 在漫画规则之后继续读取 [references/runtime-comic-draw-mode.txt](references/runtime-comic-draw-mode.txt)。输入主要是角色名单，规划器负责随机创作四拍剧情，并完整描述 Panel 1 至 Panel 4；不得退化为静态合照或简短 Tag 串。
+
 ## 必守规则
 
 - 以英文逗号分隔标签；优先使用常见、具体、可视化的英文标签。
@@ -55,6 +57,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 - 需要构图、镜头、光照、多人物关系或自然语言转标签方法时，读 [references/visual-planning.md](references/visual-planning.md)。
 - 接入 AstrBot/DeepSeek，需要严格机器输出时，读 [references/runtime-contract.md](references/runtime-contract.md)。
 - 规划 `/n5 漫画` 页面时，额外读 [references/runtime-comic-mode.txt](references/runtime-comic-mode.txt)。
+- 规划 `/n5 漫画抽卡` 时，再额外读 [references/runtime-comic-draw-mode.txt](references/runtime-comic-draw-mode.txt)。
 - 需要校准输入输出风格时，读 [references/examples.md](references/examples.md)。
 
 ## 最终检查

@@ -354,6 +354,70 @@ async def test_comic_mode_keeps_repeated_character_and_panel_concepts() -> None:
 
 
 @pytest.mark.asyncio
+async def test_comic_draw_mode_invents_story_for_multiple_saved_characters() -> None:
+    """Route only the requested cast into creative four-panel planning."""
+    plugin = build_plugin()
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "狐莉",
+            "girl, white hair, fox ears, fox tail",
+            "bad ears",
+        ),
+        (
+            "__NAI_CHARACTER_SLOT_2__",
+            "鲸鱼娘",
+            "girl, blue hair, whale hair ornament",
+            "bad ornament",
+        ),
+    ]
+    plugin._resolve_character_slots = AsyncMock(
+        return_value=(
+            "__NAI_CHARACTER_SLOT_1__和__NAI_CHARACTER_SLOT_2__",
+            replacements,
+        )
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": (
+                "comic, 4koma, vertical four-panel page. Panel 1 establishes a "
+                "seaside picnic. Panel 2 introduces a runaway lunchbox. Panel 3 "
+                "shows both girls chasing it. Panel 4 ends with a tiny crab inside."
+            ),
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": (
+                    "summer dress, Panel 1 smiling, Panel 2 surprised, "
+                    "Panel 3 running, Panel 4 laughing"
+                ),
+                "__NAI_CHARACTER_SLOT_2__": (
+                    "sailor dress, Panel 1 arranging food, Panel 2 pointing, "
+                    "Panel 3 running, Panel 4 holding the crab"
+                ),
+            },
+        }
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "漫画抽卡 狐莉和鲸鱼娘",
+        )
+    ]
+
+    assert plugin._plan_prompt.await_args.kwargs == {
+        "comic_mode": True,
+        "comic_draw_mode": True,
+    }
+    generated_call = plugin._generate_from_api.await_args
+    assert "Panel 1" in generated_call.args[0]
+    assert "Panel 4" in generated_call.args[0]
+    assert len(generated_call.args[2]) == 2
+    assert "solo" not in generated_call.args[0]
+    assert results == []
+
+
+@pytest.mark.asyncio
 async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None:
     """Plan mixed character tags and natural language instead of leaking raw text."""
     plugin = build_plugin()
@@ -498,6 +562,7 @@ async def test_empty_n5_command_returns_copyable_examples() -> None:
             "示例：/n5 生成 雪夜车站里的银发少女\n"
             "其他模式：\n"
             "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
+            "/n5 漫画抽卡 <角色>：随机创作并生成四格漫画\n"
             "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
             "/n5 原始 <Prompt>：跳过提示词优化\n"
             "发送 /n5 help 查看完整帮助。",
@@ -861,6 +926,55 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
     assert "Text: 原文" in system_prompt
     assert "不得加入 `solo`" in system_prompt
     assert plan["prompt"].startswith("comic, 4koma")
+
+
+@pytest.mark.asyncio
+async def test_comic_draw_planner_retries_incomplete_panel_plan() -> None:
+    """Reject short comic prompts until all four panels and cast roles are explicit."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_enabled": True,
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    incomplete = Mock(
+        completion_text=(
+            '{"ok":true,"prompt":"comic, two girls having a picnic",'
+            '"character_prompts":{"__NAI_CHARACTER_SLOT_1__":"summer dress"},'
+            '"error":null}'
+        )
+    )
+    complete = Mock(
+        completion_text=(
+            '{"ok":true,"prompt":"comic, 4koma. Panel 1 starts a picnic. '
+            'Panel 2 shows a rolling lunchbox. Panel 3 shows a chase. Panel 4 '
+            'reveals a crab.","character_prompts":{"__NAI_CHARACTER_SLOT_1__":'
+            '"summer dress, Panel 1 smiling, Panel 2 surprised, Panel 3 running, '
+            'Panel 4 laughing"},"error":null}'
+        )
+    )
+    plugin.context = Mock()
+    plugin.context.llm_generate = AsyncMock(side_effect=[incomplete, complete])
+
+    plan = await plugin._plan_prompt(
+        "__NAI_CHARACTER_SLOT_1__",
+        4000,
+        ("__NAI_CHARACTER_SLOT_1__",),
+        comic_mode=True,
+        comic_draw_mode=True,
+    )
+
+    assert plugin.context.llm_generate.await_count == 2
+    assert all(
+        call.kwargs["temperature"] == 0.7
+        for call in plugin.context.llm_generate.await_args_list
+    )
+    system_prompt = plugin.context.llm_generate.await_args_list[0].kwargs[
+        "system_prompt"
+    ]
+    assert "本次请求是“漫画抽卡”" in system_prompt
+    assert "Panel 4" in plan["prompt"]
+    retry_prompt = plugin.context.llm_generate.await_args_list[1].kwargs["prompt"]
+    assert "Panel 1 至 Panel 4" in retry_prompt
 
 
 @pytest.mark.asyncio
