@@ -45,7 +45,7 @@ STORYBOARD_JSON = json.dumps(
                 "characters": [],
                 "action": f"visible action {number}",
                 "state_change": f"visible change {number}",
-                "dialogue": [],
+                "text_elements": [],
             }
             for number in range(1, 5)
         ],
@@ -440,12 +440,12 @@ async def test_comic_draw_mode_invents_story_for_multiple_saved_characters() -> 
         "comic_draw_mode": True,
         "comic_draw_plot_seed": "",
         "comic_storyboard": STORYBOARD_JSON,
-        "comic_text_requested": False,
+        "comic_text_allowed": True,
     }
     assert plugin._plan_comic_storyboard.await_args.kwargs == {
         "comic_draw_mode": True,
         "comic_draw_plot_seed": "",
-        "comic_text_requested": False,
+        "comic_text_allowed": True,
     }
     assert plugin._plan_comic_storyboard.await_args.args[1] == (
         "__NAI_CHARACTER_SLOT_1__",
@@ -1001,11 +1001,33 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
         "prompt_planner_enabled": True,
         "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
     }
+    storyboard_payload = json.loads(STORYBOARD_JSON)
+    storyboard_payload["panels"][0]["text_elements"] = [
+        {
+            "kind": "dialogue",
+            "content": "Good morning!",
+            "speaker": "fox girl",
+            "placement": "speech bubble above her head",
+            "style": "small handwritten black text in a white bubble",
+        }
+    ]
+    comic_storyboard = json.dumps(
+        storyboard_payload,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
     response = Mock(
-        completion_text=(
-            '{"ok":true,"prompt":"comic, 4koma. Panel 1 shows a fox girl. '
-            "Text: Good morning! Panel 2 shows breakfast. Panel 3 shows a "
-            'rush. Panel 4 shows her leaving.","character_prompts":{},"error":null}'
+        completion_text=json.dumps(
+            {
+                "ok": True,
+                "prompt": (
+                    'comic, 4koma. Panel 1 shows a fox girl with a white speech '
+                    'bubble saying "Good morning!". Panel 2 shows breakfast. '
+                    "Panel 3 shows a rush. Panel 4 shows her leaving."
+                ),
+                "character_prompts": {},
+                "error": None,
+            }
         )
     )
     plugin.context = Mock()
@@ -1015,17 +1037,17 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
         "画一页狐娘起床的四格漫画",
         4000,
         comic_mode=True,
-        comic_storyboard=STORYBOARD_JSON,
-        comic_text_requested=True,
+        comic_storyboard=comic_storyboard,
     )
 
     system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
     assert "本次请求使用 NovelAI V5 漫画模式" in system_prompt
-    assert "Text: 原文" in system_prompt
+    assert "唯一的 `Text:` 块" in system_prompt
     assert "不得加入 `solo`" in system_prompt
     planner_prompt = plugin.context.llm_generate.await_args.kwargs["prompt"]
     assert "[COMIC_STORYBOARD_BEGIN]" in planner_prompt
-    assert '"shot":"medium shot"' in planner_prompt
+    assert '"content":"Good morning!"' in planner_prompt
+    assert "Text:" not in plan["prompt"]
     assert plan["prompt"].startswith("comic, 4koma")
 
 
@@ -1071,13 +1093,14 @@ async def test_visual_only_comic_planner_retries_invented_rendered_text() -> Non
         4000,
         comic_mode=True,
         comic_storyboard=STORYBOARD_JSON,
+        comic_text_allowed=False,
     )
 
     assert plugin.context.llm_generate.await_count == 2
     system_prompt = plugin.context.llm_generate.await_args_list[0].kwargs[
         "system_prompt"
     ]
-    assert "本次用户没有要求任何可见文字" in system_prompt
+    assert "本次用户明确要求纯画面" in system_prompt
     assert "Text:" not in plan["prompt"]
 
 
@@ -1113,8 +1136,8 @@ def test_storyboard_parser_rejects_foreign_cast_slot() -> None:
         )
 
 
-def test_storyboard_parser_enforces_visual_only_full_cast_panels() -> None:
-    """Reject invented dialogue and single-subject framing in a two-person draw."""
+def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> None:
+    """Validate structured text while rejecting text in visual-only mode."""
     slots = ("__NAI_CHARACTER_SLOT_1__", "__NAI_CHARACTER_SLOT_2__")
     payload = json.loads(STORYBOARD_JSON)
     payload["ok"] = True
@@ -1146,16 +1169,66 @@ def test_storyboard_parser_enforces_visual_only_full_cast_panels() -> None:
         )
     payload["page_layout"] = storyboard["page_layout"]
 
-    payload["panels"][1]["dialogue"] = ["角色一：快一点！"]
-    with pytest.raises(MODULE.NovelAIWebError, match="不得自行添加对白"):
+    payload["panels"][1]["text_elements"] = [
+        {
+            "kind": "dialogue",
+            "content": "快一点！",
+            "speaker": slots[0],
+            "placement": "speech bubble above the first character",
+            "style": "bold black text in a white bubble",
+        }
+    ]
+    payload["panels"][0]["text_elements"] = [
+        {
+            "kind": "title",
+            "content": "雪人大战",
+            "speaker": "",
+            "placement": "page top",
+            "style": "large bold display lettering",
+        }
+    ]
+    payload["panels"][2]["text_elements"] = [
+        {
+            "kind": "sfx",
+            "content": "砰！",
+            "speaker": "",
+            "placement": "beside the collapsing snowman",
+            "style": "large jagged lettering",
+        }
+    ]
+    payload["panels"][3]["text_elements"] = [
+        {
+            "kind": "narration",
+            "content": "胜负已分",
+            "speaker": "",
+            "placement": "lower-right corner",
+            "style": "small neat text in a pale box",
+        }
+    ]
+    with pytest.raises(MODULE.NovelAIWebError, match="明确要求纯画面"):
         MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
             json.dumps(payload, ensure_ascii=False),
             slots,
             exact_four_panels=True,
+            allow_rendered_text=False,
             require_full_cast_each_panel=True,
         )
 
-    payload["panels"][1]["dialogue"] = []
+    accepted_with_text = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+        json.dumps(payload, ensure_ascii=False),
+        slots,
+        exact_four_panels=True,
+        require_full_cast_each_panel=True,
+    )
+    assert accepted_with_text["panels"][1]["text_elements"][0]["kind"] == (
+        "dialogue"
+    )
+    assert [
+        panel["text_elements"][0]["kind"]
+        for panel in accepted_with_text["panels"]
+    ] == ["title", "dialogue", "sfx", "narration"]
+
+    payload["panels"][1]["text_elements"] = []
     payload["panels"][2]["shot"] = "close-up"
     with pytest.raises(MODULE.NovelAIWebError, match="景别不足"):
         MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
@@ -1167,24 +1240,77 @@ def test_storyboard_parser_enforces_visual_only_full_cast_panels() -> None:
 
 
 @pytest.mark.asyncio
-async def test_requested_comic_dialogue_does_not_enable_no_text_guards() -> None:
-    """Preserve visible text only when the user explicitly requests dialogue."""
-    plugin = build_plugin("comic, 1koma, Panel 1, Text: 早上好")
+async def test_comic_text_is_appended_as_the_final_api_prompt_block() -> None:
+    """Append structured visible text only after every visual prompt instruction."""
+    plugin = build_plugin(
+        'comic, 4koma, Panel 1 page title "雪人大战". '
+        'Panel 2 speech bubble "快一点！". Panel 3 impact sfx "砰！". '
+        'Panel 4 narration box "胜负已分".'
+    )
+    storyboard_payload = json.loads(STORYBOARD_JSON)
+    storyboard_payload["panels"][0]["text_elements"] = [
+        {
+            "kind": "title",
+            "content": "雪人大战",
+            "speaker": "",
+            "placement": "page top",
+            "style": "large bold blue display text",
+        }
+    ]
+    storyboard_payload["panels"][1]["text_elements"] = [
+        {
+            "kind": "dialogue",
+            "content": "快一点！",
+            "speaker": "fox girl",
+            "placement": "speech bubble above her head",
+            "style": "black handwritten text in a white bubble",
+        }
+    ]
+    storyboard_payload["panels"][2]["text_elements"] = [
+        {
+            "kind": "sfx",
+            "content": "砰！",
+            "speaker": "",
+            "placement": "beside the collapsing snowman",
+            "style": "large jagged blue sound-effect lettering",
+        }
+    ]
+    storyboard_payload["panels"][3]["text_elements"] = [
+        {
+            "kind": "narration",
+            "content": "胜负已分",
+            "speaker": "",
+            "placement": "small box in the lower-right corner",
+            "style": "neat black text in a pale rectangular box",
+        }
+    ]
+    plugin._plan_comic_storyboard = AsyncMock(
+        return_value=json.dumps(
+            storyboard_payload,
+            ensure_ascii=False,
+            separators=(",", ":"),
+        )
+    )
 
     results = [
         result
         async for result in plugin.generate_image(
             FakeEvent(),
-            "漫画 狐娘说：早上好",
+            "漫画 狐娘醒来问候朋友",
         )
     ]
 
-    assert plugin._plan_prompt.await_args.kwargs["comic_text_requested"] is True
+    assert plugin._plan_prompt.await_args.kwargs["comic_text_allowed"] is True
     assert plugin._plan_comic_storyboard.await_args.kwargs[
-        "comic_text_requested"
+        "comic_text_allowed"
     ] is True
     generated_call = plugin._generate_from_api.await_args
     assert "no text" not in generated_call.args[0]
+    assert generated_call.args[0].startswith("text, chinese text, nsfw")
+    assert generated_call.args[0].endswith(
+        "Text: 雪人大战\n\n快一点！\n\n砰！\n\n胜负已分"
+    )
+    assert generated_call.args[0].count("Text:") == 1
     assert generated_call.args[3] == ""
     assert results == []
 
@@ -1222,10 +1348,31 @@ async def test_comic_storyboard_retries_then_returns_compact_json() -> None:
         for call in plugin.context.llm_generate.await_args_list
     )
     assert "抢夺包子" in plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
+    assert (
+        "[TEXT_POLICY]\nALLOW_STORY_TEXT\n[/TEXT_POLICY]"
+        in plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
+    )
     assert "上一次分镜无效" in plugin.context.llm_generate.await_args_list[1].kwargs[
         "prompt"
     ]
     assert json.loads(storyboard)["panels"][3]["panel"] == 4
+
+
+@pytest.mark.parametrize(
+    ("prompt_text", "forbids_text"),
+    [
+        ("漫画抽卡 狐莉和鲸鱼娘", False),
+        ("漫画抽卡 狐莉和鲸鱼娘，无对白", True),
+        ("漫画抽卡 狐莉和鲸鱼娘，纯画面", True),
+        ("漫画抽卡 狐莉和鲸鱼娘，no text", True),
+    ],
+)
+def test_comic_text_is_disabled_only_by_an_explicit_visual_only_request(
+    prompt_text: str,
+    forbids_text: bool,
+) -> None:
+    """Keep useful story text unless the user explicitly requests no text."""
+    assert bool(MODULE.COMIC_TEXT_FORBID_PATTERN.search(prompt_text)) is forbids_text
 
 
 @pytest.mark.asyncio
@@ -1968,6 +2115,7 @@ async def test_chibi_planning_keeps_hard_style_and_removes_realism() -> None:
     assert "NovelAI Diffusion V5 Curated" in system_prompt
     assert "[llm][v5-no-density-target]" in system_prompt
     assert "[deterministic][single-subject-solo]" in system_prompt
+    assert "[deterministic][v5-rendered-text-block]" in system_prompt
     assert "[llm][base-character-responsibility]" in system_prompt
     assert "机器输出协议与 API 安全边界 > 用户本次明确要求" in system_prompt
     assert "角色展示、环境叙事、尺度对比奇观或物体中心" in system_prompt
@@ -1999,6 +2147,21 @@ def test_official_knowledge_is_model_scoped_and_traceable() -> None:
         for rule in rules["rules"]
     )
     assert preferences["priority"].startswith("Local preferences apply only after")
+
+
+def test_global_nsfw_preserves_the_terminal_text_block_verbatim() -> None:
+    """Keep official Text content and blank-line separators at the absolute end."""
+    prompt = (
+        "comic, Panel 1 action, rating:general\n"
+        "Text: Hello, world!\n\n砰！"
+    )
+
+    normalized = MODULE.NovelAIWebPlugin._apply_global_nsfw_prompt(prompt)
+
+    assert normalized == (
+        "nsfw, comic, Panel 1 action\nText: Hello, world!\n\n砰！"
+    )
+    assert normalized.endswith("Text: Hello, world!\n\n砰！")
 
 
 @pytest.mark.asyncio

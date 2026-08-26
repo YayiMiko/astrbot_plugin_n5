@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "retrieved_at": "2026-08-25",
+  "retrieved_at": "2026-08-26",
   "sources": [
     {
       "id": "official-v5-release",
@@ -55,6 +55,13 @@
       "id": "official-guidance",
       "title": "Steps and Prompt Guidance",
       "url": "https://docs.novelai.net/en/image/stepsguidance/",
+      "authority": "official",
+      "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
+    },
+    {
+      "id": "official-text-rendering",
+      "title": "Text Rendering",
+      "url": "https://docs.novelai.net/en/image/textrendering/",
       "authority": "official",
       "applies_to": ["nai-diffusion-5-curated", "nai-diffusion-5-full"]
     }

@@ -24,6 +24,13 @@
       "sources": ["official-v5-release"]
     },
     {
+      "id": "v5-rendered-text-block",
+      "scope": "text_rendering",
+      "enforcement": "deterministic",
+      "instruction": "Describe each visible text element and its placement in the base prompt, quote its exact content, and append one Text: block at the absolute end of the base prompt. Separate multiple text strings with blank lines, keep the total concise, and never place visual prompt instructions after Text:.",
+      "sources": ["official-text-rendering", "official-v5-release"]
+    },
+    {
       "id": "v5-character-capacity",
       "scope": "character_prompt",
       "enforcement": "deterministic",
