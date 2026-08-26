@@ -107,6 +107,14 @@ NOVELAI_CHARACTER_TAG_PATTERN = re.compile(
     re.IGNORECASE,
 )
 COMIC_PANEL_PATTERN = re.compile(r"(?i)\bpanel\s*([1-4])\b")
+COMIC_TEXT_REQUEST_PATTERN = re.compile(
+    r"(?:对白|台词|气泡|字幕|标题|文字|写着|说[：:]|喊[：:]|"
+    r"\b(?:dialogue|caption|subtitle|speech bubble|text)\b)",
+    re.IGNORECASE,
+)
+COMIC_RENDERED_TEXT_PATTERN = re.compile(
+    r"(?i)\b(?:text|caption|subtitle|speech bubbles?)\s*:|[\"“”]"
+)
 EXPLICIT_SUBJECT_COUNT_PATTERN = re.compile(
     r"(?<![a-z0-9_])\d+\s*(?:girls?|boys?|women|men|others?|people|persons?|characters?)"
     r"(?![a-z0-9_])",
@@ -769,6 +777,8 @@ class NovelAIWebPlugin(star.Star):
         required_character_slots: tuple[str, ...] = (),
         *,
         exact_four_panels: bool = False,
+        allow_dialogue: bool = False,
+        require_full_cast_each_panel: bool = False,
     ) -> ComicStoryboard:
         """Validate a structured visual storyboard returned by the planner.
 
@@ -776,6 +786,8 @@ class NovelAIWebPlugin(star.Star):
             raw_response: Raw model completion expected to contain one JSON object.
             required_character_slots: Protected cast slots available to the storyboard.
             exact_four_panels: Whether the storyboard must contain exactly four panels.
+            allow_dialogue: Whether the user explicitly requested rendered text.
+            require_full_cast_each_panel: Whether every panel must show the full cast.
 
         Returns:
             Validated page layout, continuity, and sequential panel descriptions.
@@ -814,6 +826,11 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError("漫画分镜必须包含 1 至 4 格。")
         if exact_four_panels and len(raw_panels) != 4:
             raise NovelAIWebError("漫画抽卡分镜必须完整包含 4 格。")
+        if exact_four_panels:
+            storyboard["page_layout"] = (
+                "vertical page with four stacked horizontal panels"
+            )
+            storyboard["reading_order"] = "top to bottom"
 
         required_fields = (
             "beat",
@@ -854,6 +871,20 @@ class NovelAIWebPlugin(star.Star):
             used_slots.update(
                 value for value in normalized_characters if value in allowed_slots
             )
+            if (
+                require_full_cast_each_panel
+                and set(normalized_characters) != allowed_slots
+            ):
+                raise NovelAIWebError(
+                    f"漫画分镜 Panel {expected_number} 没有让全部参赛角色共同入镜。"
+                )
+            if len(normalized_characters) > 1 and not re.search(
+                r"(?i)\b(?:two-shot|group shot|wide shot|ensemble shot)\b",
+                str(panel["shot"]),
+            ):
+                raise NovelAIWebError(
+                    f"漫画分镜 Panel {expected_number} 的景别不足以容纳多人。"
+                )
             panel["characters"] = normalized_characters
 
             dialogue = raw_panel.get("dialogue", [])
@@ -861,6 +892,8 @@ class NovelAIWebPlugin(star.Star):
                 isinstance(value, str) and value.strip() for value in dialogue
             ):
                 raise NovelAIWebError(f"漫画分镜 Panel {expected_number} 的对白无效。")
+            if dialogue and not allow_dialogue:
+                raise NovelAIWebError("用户未要求文字，漫画分镜不得自行添加对白。")
             panel["dialogue"] = [
                 re.sub(r"\s+", " ", value).strip() for value in dialogue
             ]
@@ -879,6 +912,7 @@ class NovelAIWebPlugin(star.Star):
         *,
         comic_draw_mode: bool = False,
         comic_draw_plot_seed: str = "",
+        comic_text_requested: bool = False,
     ) -> str:
         """Design a validated storyboard before writing the NovelAI prompt.
 
@@ -889,6 +923,7 @@ class NovelAIWebPlugin(star.Star):
             metadata_prompt: Trusted NovelAI metadata recovered from request images.
             comic_draw_mode: Whether to create an exact four-panel draw story.
             comic_draw_plot_seed: Optional user-specified event to expand.
+            comic_text_requested: Whether rendered dialogue or captions were requested.
 
         Returns:
             Compact JSON containing the validated storyboard.
@@ -920,6 +955,8 @@ class NovelAIWebPlugin(star.Star):
             f"[MODE]\n{'COMIC_DRAW_EXACT_4' if comic_draw_mode else 'COMIC_1_TO_4'}"
             "\n[/MODE]\n"
             f"[PLOT_SEED]\n{plot_seed}\n[/PLOT_SEED]\n"
+            f"[TEXT_POLICY]\n{'ALLOW_REQUESTED_TEXT' if comic_text_requested else 'VISUAL_ONLY_NO_TEXT'}"
+            "\n[/TEXT_POLICY]\n"
             f"[USER_REQUEST]\n{description}\n[/USER_REQUEST]"
         )
         if metadata_prompt:
@@ -946,6 +983,10 @@ class NovelAIWebPlugin(star.Star):
                     str(response.completion_text or "").strip(),
                     required_character_slots,
                     exact_four_panels=comic_draw_mode,
+                    allow_dialogue=comic_text_requested,
+                    require_full_cast_each_panel=(
+                        comic_draw_mode and 1 < len(required_character_slots) <= 4
+                    ),
                 )
                 return json.dumps(
                     storyboard,
@@ -1018,6 +1059,7 @@ class NovelAIWebPlugin(star.Star):
         comic_draw_mode: bool = False,
         comic_draw_plot_seed: str = "",
         comic_storyboard: str = "",
+        comic_text_requested: bool = False,
     ) -> PromptPlan:
         """Convert a user description into a validated NovelAI V5 prompt.
 
@@ -1031,6 +1073,7 @@ class NovelAIWebPlugin(star.Star):
             comic_draw_mode: Whether to invent a four-panel story from cast names.
             comic_draw_plot_seed: Optional user-specified event to expand.
             comic_storyboard: Trusted structured storyboard for prompt translation.
+            comic_text_requested: Whether rendered dialogue or captions were requested.
 
         Returns:
             Validated base prompt and per-character dynamic prompts.
@@ -1090,6 +1133,13 @@ class NovelAIWebPlugin(star.Star):
                 "道具和动作必须全部写入主 `prompt`。"
             )
         system_prompt += "\n\n本次请求的人物槽位契约：\n" + slot_contract
+        if comic_mode and not comic_text_requested:
+            system_prompt += (
+                "\n\n本次用户没有要求任何可见文字。最终主 Prompt 和人物 Prompt 禁止"
+                " `Text:`、Caption、Subtitle、引号对白、对白气泡或标题；只用动作、"
+                "表情、视线、物件状态和构图讲故事。每格说明应是紧凑的视觉指令，"
+                "不得把分镜字段或规划说明当作页面文字。"
+            )
         if CHIBI_SOURCE_PATTERN.search(description):
             system_prompt += (
                 "\n\n本次输入包含强风格约束 Q版/chibi。必须在主 Prompt 开头保留 "
@@ -1201,6 +1251,14 @@ class NovelAIWebPlugin(star.Star):
                     ]
                     if planned_panels != expected_panels:
                         semantic_errors.append("最终 Prompt 未完整保留分镜格数与顺序")
+                if comic_mode and not comic_text_requested:
+                    combined_comic_prompt = ", ".join(
+                        (plan["prompt"], *plan["character_prompts"].values())
+                    )
+                    if COMIC_RENDERED_TEXT_PATTERN.search(combined_comic_prompt):
+                        semantic_errors.append(
+                            "用户未要求文字但最终 Prompt 添加了文字内容"
+                        )
                 if semantic_errors:
                     raise NovelAIWebError(
                         "Prompt 规划遗漏或曲解核心语义："
@@ -3800,6 +3858,7 @@ class NovelAIWebPlugin(star.Star):
         prompt_text = arguments
         comic_draw_mode = subcommand == "漫画抽卡"
         comic_mode = subcommand in {"漫画", "漫画抽卡"}
+        comic_text_requested = bool(COMIC_TEXT_REQUEST_PATTERN.search(prompt_text))
         comic_draw_plot_seed = ""
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
@@ -3923,6 +3982,7 @@ class NovelAIWebPlugin(star.Star):
                                 image_context.metadata_prompt,
                                 comic_draw_mode=comic_draw_mode,
                                 comic_draw_plot_seed=comic_draw_plot_seed,
+                                comic_text_requested=comic_text_requested,
                             )
                         plan = await self._plan_prompt(
                             prompt_text,
@@ -3934,6 +3994,7 @@ class NovelAIWebPlugin(star.Star):
                             comic_draw_mode=comic_draw_mode,
                             comic_draw_plot_seed=comic_draw_plot_seed,
                             comic_storyboard=comic_storyboard,
+                            comic_text_requested=comic_text_requested,
                         )
                     else:
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)
@@ -3978,6 +4039,32 @@ class NovelAIWebPlugin(star.Star):
                             for item in negative_prompt.split(",")
                             if item.strip().casefold() not in comic_negative_conflicts
                         )
+                        if not comic_text_requested:
+                            if not re.search(
+                                r"(?i)(?<![a-z])no text(?![a-z])", prompt_text
+                            ):
+                                prompt_text = "no text, " + prompt_text
+                            negative_items = [
+                                item.strip()
+                                for item in negative_prompt.split(",")
+                                if item.strip()
+                            ]
+                            present_negative = {
+                                item.casefold() for item in negative_items
+                            }
+                            negative_items.extend(
+                                item
+                                for item in (
+                                    "text",
+                                    "captions",
+                                    "speech bubbles",
+                                    "subtitles",
+                                    "watermark",
+                                    "signature",
+                                )
+                                if item.casefold() not in present_negative
+                            )
+                            negative_prompt = ", ".join(negative_items)
                     else:
                         prompt_text = self._apply_character_subject_counts(
                             prompt_text,
