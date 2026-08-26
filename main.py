@@ -826,11 +826,19 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError("漫画分镜必须包含 1 至 4 格。")
         if exact_four_panels and len(raw_panels) != 4:
             raise NovelAIWebError("漫画抽卡分镜必须完整包含 4 格。")
-        if exact_four_panels:
-            storyboard["page_layout"] = (
-                "vertical page with four stacked horizontal panels"
-            )
-            storyboard["reading_order"] = "top to bottom"
+        expected_panel_sequence = list(range(1, len(raw_panels) + 1))
+        layout_panel_sequence = [
+            int(value)
+            for value in COMIC_PANEL_PATTERN.findall(storyboard["page_layout"])
+        ]
+        if layout_panel_sequence != expected_panel_sequence:
+            raise NovelAIWebError("漫画分镜布局必须逐格说明每格的位置和尺寸。")
+        reading_panel_sequence = [
+            int(value)
+            for value in COMIC_PANEL_PATTERN.findall(storyboard["reading_order"])
+        ]
+        if reading_panel_sequence != expected_panel_sequence:
+            raise NovelAIWebError("漫画分镜阅读顺序必须与连续格号完全一致。")
 
         required_fields = (
             "beat",
