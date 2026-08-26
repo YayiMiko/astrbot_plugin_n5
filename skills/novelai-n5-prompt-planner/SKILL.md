@@ -33,6 +33,8 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 
 `/n5 漫画抽卡` 在漫画规则之后继续读取 [references/runtime-comic-draw-mode.txt](references/runtime-comic-draw-mode.txt)。输入包含角色名单和可选剧情种子；有剧情时围绕它扩写连续四拍事件，没有剧情时才随机创作，并完整描述 Panel 1 至 Panel 4。不得退化为静态合照、同姿势差分或简短 Tag 串。
 
+所有漫画请求先读取 [references/runtime-comic-storyboard.txt](references/runtime-comic-storyboard.txt)，独立生成并验证镜头级分镜，再把分镜作为权威结构交给最终 Prompt 规划器。最终规划不得更改格数、顺序、景别、机位、人物站位、动作、状态变化、连续性或对白。
+
 ## 必守规则
 
 - 以英文逗号分隔标签；优先使用常见、具体、可视化的英文标签。

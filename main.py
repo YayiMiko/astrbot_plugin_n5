@@ -142,6 +142,13 @@ COMIC_DRAW_PLANNER_SYSTEM_PROMPT_PATH = (
     / "references"
     / "runtime-comic-draw-mode.txt"
 )
+COMIC_STORYBOARD_SYSTEM_PROMPT_PATH = (
+    Path(__file__).resolve().parent
+    / "skills"
+    / "novelai-n5-prompt-planner"
+    / "references"
+    / "runtime-comic-storyboard.txt"
+)
 PROMPT_KNOWLEDGE_DIR = (
     Path(__file__).resolve().parent
     / "skills"
@@ -207,6 +214,15 @@ class PromptPlan(TypedDict):
 
     prompt: str
     character_prompts: dict[str, str]
+
+
+class ComicStoryboard(TypedDict):
+    """Hold one validated multi-panel visual storyboard."""
+
+    page_layout: str
+    reading_order: str
+    visual_continuity: str
+    panels: list[dict[str, object]]
 
 
 class PendingCharacterChange(TypedDict):
@@ -748,6 +764,204 @@ class NovelAIWebPlugin(star.Star):
         return {"prompt": planned_prompt, "character_prompts": character_prompts}
 
     @staticmethod
+    def _parse_comic_storyboard_response(
+        raw_response: str,
+        required_character_slots: tuple[str, ...] = (),
+        *,
+        exact_four_panels: bool = False,
+    ) -> ComicStoryboard:
+        """Validate a structured visual storyboard returned by the planner.
+
+        Args:
+            raw_response: Raw model completion expected to contain one JSON object.
+            required_character_slots: Protected cast slots available to the storyboard.
+            exact_four_panels: Whether the storyboard must contain exactly four panels.
+
+        Returns:
+            Validated page layout, continuity, and sequential panel descriptions.
+
+        Raises:
+            NovelAIWebError: If the response violates the storyboard protocol.
+        """
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            raw_response.strip(),
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            raw_response = fenced.group(1)
+        try:
+            payload = json.loads(raw_response)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise NovelAIWebError("漫画分镜模型没有返回有效 JSON。") from exc
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            raise NovelAIWebError("漫画分镜模型返回了无效协议。")
+
+        storyboard: ComicStoryboard = {
+            "page_layout": "",
+            "reading_order": "",
+            "visual_continuity": "",
+            "panels": [],
+        }
+        for field in ("page_layout", "reading_order", "visual_continuity"):
+            value = payload.get(field)
+            if not isinstance(value, str) or not value.strip():
+                raise NovelAIWebError(f"漫画分镜缺少 {field}。")
+            storyboard[field] = re.sub(r"\s+", " ", value).strip()
+
+        raw_panels = payload.get("panels")
+        if not isinstance(raw_panels, list) or not 1 <= len(raw_panels) <= 4:
+            raise NovelAIWebError("漫画分镜必须包含 1 至 4 格。")
+        if exact_four_panels and len(raw_panels) != 4:
+            raise NovelAIWebError("漫画抽卡分镜必须完整包含 4 格。")
+
+        required_fields = (
+            "beat",
+            "shot",
+            "camera",
+            "composition",
+            "action",
+            "state_change",
+        )
+        allowed_slots = set(required_character_slots)
+        used_slots: set[str] = set()
+        for expected_number, raw_panel in enumerate(raw_panels, start=1):
+            if not isinstance(raw_panel, dict):
+                raise NovelAIWebError("漫画分镜包含无效分格。")
+            if raw_panel.get("panel") != expected_number:
+                raise NovelAIWebError("漫画分镜格号必须从 1 开始连续排列。")
+            panel: dict[str, object] = {"panel": expected_number}
+            for field in required_fields:
+                value = raw_panel.get(field)
+                if not isinstance(value, str) or not value.strip():
+                    raise NovelAIWebError(
+                        f"漫画分镜 Panel {expected_number} 缺少 {field}。"
+                    )
+                panel[field] = re.sub(r"\s+", " ", value).strip()
+
+            characters = raw_panel.get("characters")
+            if not isinstance(characters, list) or not all(
+                isinstance(value, str) and value.strip() for value in characters
+            ):
+                raise NovelAIWebError(
+                    f"漫画分镜 Panel {expected_number} 的出场人物无效。"
+                )
+            normalized_characters = [value.strip() for value in characters]
+            if allowed_slots and any(
+                value not in allowed_slots for value in normalized_characters
+            ):
+                raise NovelAIWebError("漫画分镜使用了本次请求之外的人物槽位。")
+            used_slots.update(
+                value for value in normalized_characters if value in allowed_slots
+            )
+            panel["characters"] = normalized_characters
+
+            dialogue = raw_panel.get("dialogue", [])
+            if not isinstance(dialogue, list) or not all(
+                isinstance(value, str) and value.strip() for value in dialogue
+            ):
+                raise NovelAIWebError(f"漫画分镜 Panel {expected_number} 的对白无效。")
+            panel["dialogue"] = [
+                re.sub(r"\s+", " ", value).strip() for value in dialogue
+            ]
+            storyboard["panels"].append(panel)
+
+        if allowed_slots - used_slots:
+            raise NovelAIWebError("漫画分镜遗漏了本次请求中的出场角色。")
+        return storyboard
+
+    async def _plan_comic_storyboard(
+        self,
+        description: str,
+        required_character_slots: tuple[str, ...] = (),
+        image_urls: tuple[str, ...] = (),
+        metadata_prompt: str = "",
+        *,
+        comic_draw_mode: bool = False,
+        comic_draw_plot_seed: str = "",
+    ) -> str:
+        """Design a validated storyboard before writing the NovelAI prompt.
+
+        Args:
+            description: User-provided comic description with protected cast slots.
+            required_character_slots: Protected character keys available to the story.
+            image_urls: Request-local images for native multimodal planning.
+            metadata_prompt: Trusted NovelAI metadata recovered from request images.
+            comic_draw_mode: Whether to create an exact four-panel draw story.
+            comic_draw_plot_seed: Optional user-specified event to expand.
+
+        Returns:
+            Compact JSON containing the validated storyboard.
+
+        Raises:
+            NovelAIWebError: If storyboard planning fails after retry.
+        """
+        provider_id = str(
+            self.config.get(
+                "prompt_planner_provider_id",
+                DEFAULT_PROMPT_PLANNER_PROVIDER_ID,
+            )
+        ).strip()
+        if not provider_id:
+            raise NovelAIWebError("prompt_planner_provider_id 不能为空。")
+        try:
+            system_prompt = COMIC_STORYBOARD_SYSTEM_PROMPT_PATH.read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError as exc:
+            raise NovelAIWebError("NovelAI 漫画分镜规则无法读取。") from exc
+        if not system_prompt:
+            raise NovelAIWebError("NovelAI 漫画分镜规则为空。")
+
+        allowed_slots = ", ".join(required_character_slots) or "NONE"
+        plot_seed = comic_draw_plot_seed or "AI_INVENT_STORY"
+        retry_prompt = (
+            f"[CAST_SLOTS]\n{allowed_slots}\n[/CAST_SLOTS]\n"
+            f"[MODE]\n{'COMIC_DRAW_EXACT_4' if comic_draw_mode else 'COMIC_1_TO_4'}"
+            "\n[/MODE]\n"
+            f"[PLOT_SEED]\n{plot_seed}\n[/PLOT_SEED]\n"
+            f"[USER_REQUEST]\n{description}\n[/USER_REQUEST]"
+        )
+        if metadata_prompt:
+            retry_prompt += (
+                "\n[IMAGE_METADATA]\n" + metadata_prompt + "\n[/IMAGE_METADATA]"
+            )
+        last_error: NovelAIWebError | None = None
+        for attempt in range(3):
+            try:
+                response = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=retry_prompt,
+                    image_urls=list(image_urls),
+                    system_prompt=system_prompt,
+                    request_max_retries=2,
+                    temperature=0.7 if comic_draw_mode else 0,
+                )
+            except Exception as exc:
+                raise NovelAIWebError(
+                    "DeepSeek Flash 漫画分镜失败，请稍后再试。"
+                ) from exc
+            try:
+                storyboard = self._parse_comic_storyboard_response(
+                    str(response.completion_text or "").strip(),
+                    required_character_slots,
+                    exact_four_panels=comic_draw_mode,
+                )
+                return json.dumps(
+                    storyboard,
+                    ensure_ascii=False,
+                    separators=(",", ":"),
+                )
+            except NovelAIWebError as exc:
+                last_error = exc
+                if attempt < 2:
+                    retry_prompt = (
+                        f"上一次分镜无效：{exc} 请严格修正协议并重新设计。\n"
+                        + retry_prompt
+                    )
+        raise last_error or NovelAIWebError("漫画分镜规划失败。")
+
+    @staticmethod
     def _semantic_plan_errors(
         description: str,
         plan: PromptPlan,
@@ -803,6 +1017,7 @@ class NovelAIWebPlugin(star.Star):
         comic_mode: bool = False,
         comic_draw_mode: bool = False,
         comic_draw_plot_seed: str = "",
+        comic_storyboard: str = "",
     ) -> PromptPlan:
         """Convert a user description into a validated NovelAI V5 prompt.
 
@@ -815,6 +1030,7 @@ class NovelAIWebPlugin(star.Star):
             comic_mode: Whether to plan a complete multi-panel comic page.
             comic_draw_mode: Whether to invent a four-panel story from cast names.
             comic_draw_plot_seed: Optional user-specified event to expand.
+            comic_storyboard: Trusted structured storyboard for prompt translation.
 
         Returns:
             Validated base prompt and per-character dynamic prompts.
@@ -882,6 +1098,17 @@ class NovelAIWebPlugin(star.Star):
                 "tall、long legs 或写实电影镜头等会稀释 Q 版比例的内容。"
             )
         retry_prompt = description
+        storyboard_contract = ""
+        if comic_mode and comic_storyboard:
+            storyboard_contract = (
+                "\n\n[COMIC_STORYBOARD_BEGIN]\n"
+                + comic_storyboard
+                + "\n[COMIC_STORYBOARD_END]\n"
+                "这是已经通过插件验证的分镜。必须逐格忠实转译为最终 NovelAI Prompt，"
+                "保留每格景别、机位、构图、出场人物、动作、状态变化与对白；不得合并、"
+                "改序、删格或另写剧情。"
+            )
+            retry_prompt += storyboard_contract
         comic_draw_plot_contract = ""
         if comic_draw_mode:
             if comic_draw_plot_seed:
@@ -962,6 +1189,18 @@ class NovelAIWebPlugin(star.Star):
                     comic_mode=comic_mode,
                     comic_draw_mode=comic_draw_mode,
                 )
+                if comic_mode and comic_storyboard:
+                    storyboard_payload = json.loads(comic_storyboard)
+                    expected_panels = [
+                        int(panel["panel"])
+                        for panel in storyboard_payload.get("panels", [])
+                    ]
+                    planned_panels = [
+                        int(value)
+                        for value in COMIC_PANEL_PATTERN.findall(plan["prompt"])
+                    ]
+                    if planned_panels != expected_panels:
+                        semantic_errors.append("最终 Prompt 未完整保留分镜格数与顺序")
                 if semantic_errors:
                     raise NovelAIWebError(
                         "Prompt 规划遗漏或曲解核心语义："
@@ -985,6 +1224,7 @@ class NovelAIWebPlugin(star.Star):
                         f"只返回协议规定的一行 JSON。{slot_contract}\n"
                         + description
                         + comic_draw_plot_contract
+                        + storyboard_contract
                     )
 
         raise last_error or NovelAIWebError("Prompt 规划失败。")
@@ -3674,6 +3914,16 @@ class NovelAIWebPlugin(star.Star):
             try:
                 async with self._generation_semaphore:
                     if not is_direct_prompt:
+                        comic_storyboard = ""
+                        if comic_mode:
+                            comic_storyboard = await self._plan_comic_storyboard(
+                                prompt_text,
+                                tuple(slot for slot, _, _, _ in character_replacements),
+                                image_context.image_urls,
+                                image_context.metadata_prompt,
+                                comic_draw_mode=comic_draw_mode,
+                                comic_draw_plot_seed=comic_draw_plot_seed,
+                            )
                         plan = await self._plan_prompt(
                             prompt_text,
                             planner_max_length,
@@ -3683,6 +3933,7 @@ class NovelAIWebPlugin(star.Star):
                             comic_mode=comic_mode,
                             comic_draw_mode=comic_draw_mode,
                             comic_draw_plot_seed=comic_draw_plot_seed,
+                            comic_storyboard=comic_storyboard,
                         )
                     else:
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)
