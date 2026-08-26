@@ -27,7 +27,7 @@
       "id": "v5-rendered-text-block",
       "scope": "text_rendering",
       "enforcement": "deterministic",
-      "instruction": "Describe each visible text element and its placement in the base prompt, quote its exact content, and append one Text: block at the absolute end of the base prompt. Separate multiple text strings with blank lines, keep the total concise, and never place visual prompt instructions after Text:.",
+      "instruction": "Describe each visible text element and its placement in the base prompt, and quote its exact content. Do not emit a Text: block in planner output: the plugin deterministically appends one canonical Text: block at the absolute end after all visual instructions, with multiple strings separated by blank lines.",
       "sources": ["official-text-rendering", "official-v5-release"]
     },
     {

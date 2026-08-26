@@ -1284,6 +1284,24 @@ class NovelAIWebPlugin(star.Star):
                 )
                 if comic_mode and comic_storyboard:
                     storyboard_payload = json.loads(comic_storyboard)
+                    expected_rendered_texts = [
+                        str(element["content"])
+                        for panel in storyboard_payload.get("panels", [])
+                        for element in panel.get("text_elements", [])
+                    ]
+                    planner_text_block = COMIC_TEXT_BLOCK_PATTERN.search(plan["prompt"])
+                    if (
+                        comic_text_allowed
+                        and expected_rendered_texts
+                        and planner_text_block
+                    ):
+                        plan["prompt"] = plan["prompt"][
+                            : planner_text_block.start()
+                        ].rstrip(" ,;\n")
+                        logger.debug(
+                            "[n5] Removed redundant planner Text block; "
+                            "the plugin will append canonical storyboard text."
+                        )
                     expected_panels = [
                         int(panel["panel"])
                         for panel in storyboard_payload.get("panels", [])
@@ -1294,11 +1312,6 @@ class NovelAIWebPlugin(star.Star):
                     ]
                     if planned_panels != expected_panels:
                         semantic_errors.append("最终 Prompt 未完整保留分镜格数与顺序")
-                    expected_rendered_texts = [
-                        str(element["content"])
-                        for panel in storyboard_payload.get("panels", [])
-                        for element in panel.get("text_elements", [])
-                    ]
                     quoted_rendered_texts = re.findall(r'"([^"\r\n]+)"', plan["prompt"])
                     if quoted_rendered_texts != expected_rendered_texts:
                         semantic_errors.append("最终 Prompt 未正确引用分镜中的可见文字")

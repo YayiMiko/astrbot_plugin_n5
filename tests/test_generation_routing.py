@@ -1023,7 +1023,8 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
                 "prompt": (
                     'comic, 4koma. Panel 1 shows a fox girl with a white speech '
                     'bubble saying "Good morning!". Panel 2 shows breakfast. '
-                    "Panel 3 shows a rush. Panel 4 shows her leaving."
+                    "Panel 3 shows a rush. Panel 4 shows her leaving.\n"
+                    "Text: Good morning!"
                 ),
                 "character_prompts": {},
                 "error": None,
@@ -1049,6 +1050,7 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
     assert '"content":"Good morning!"' in planner_prompt
     assert "Text:" not in plan["prompt"]
     assert plan["prompt"].startswith("comic, 4koma")
+    assert plan["prompt"].endswith("Panel 4 shows her leaving.")
 
 
 @pytest.mark.asyncio
