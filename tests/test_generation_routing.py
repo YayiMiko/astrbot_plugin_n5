@@ -29,8 +29,11 @@ SPEC.loader.exec_module(MODULE)
 
 STORYBOARD_JSON = json.dumps(
     {
-        "page_layout": "vertical four-panel page",
-        "reading_order": "top to bottom",
+        "page_layout": (
+            "vertical page; Panel 1 wide top; Panel 2 small middle-left; "
+            "Panel 3 small middle-right; Panel 4 wide bottom"
+        ),
+        "reading_order": "Panel 1 -> Panel 2 -> Panel 3 -> Panel 4",
         "visual_continuity": "same clothes, location, props, and light",
         "panels": [
             {
@@ -1126,9 +1129,22 @@ def test_storyboard_parser_enforces_visual_only_full_cast_panels() -> None:
         require_full_cast_each_panel=True,
     )
     assert storyboard["page_layout"] == (
-        "vertical page with four stacked horizontal panels"
+        "vertical page; Panel 1 wide top; Panel 2 small middle-left; "
+        "Panel 3 small middle-right; Panel 4 wide bottom"
     )
-    assert storyboard["reading_order"] == "top to bottom"
+    assert storyboard["reading_order"] == (
+        "Panel 1 -> Panel 2 -> Panel 3 -> Panel 4"
+    )
+
+    payload["page_layout"] = "vertical four-panel page"
+    with pytest.raises(MODULE.NovelAIWebError, match="逐格说明"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            json.dumps(payload, ensure_ascii=False),
+            slots,
+            exact_four_panels=True,
+            require_full_cast_each_panel=True,
+        )
+    payload["page_layout"] = storyboard["page_layout"]
 
     payload["panels"][1]["dialogue"] = ["角色一：快一点！"]
     with pytest.raises(MODULE.NovelAIWebError, match="不得自行添加对白"):
