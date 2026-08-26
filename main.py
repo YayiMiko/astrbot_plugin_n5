@@ -106,6 +106,7 @@ NOVELAI_CHARACTER_TAG_PATTERN = re.compile(
     r"(?<![a-z0-9_])[a-z0-9][a-z0-9_']+_\([a-z0-9][a-z0-9 _.'-]*\)(?![a-z0-9_])",
     re.IGNORECASE,
 )
+COMIC_PANEL_PATTERN = re.compile(r"(?i)\bpanel\s*([1-4])\b")
 EXPLICIT_SUBJECT_COUNT_PATTERN = re.compile(
     r"(?<![a-z0-9_])\d+\s*(?:girls?|boys?|women|men|others?|people|persons?|characters?)"
     r"(?![a-z0-9_])",
@@ -133,6 +134,13 @@ COMIC_PLANNER_SYSTEM_PROMPT_PATH = (
     / "novelai-n5-prompt-planner"
     / "references"
     / "runtime-comic-mode.txt"
+)
+COMIC_DRAW_PLANNER_SYSTEM_PROMPT_PATH = (
+    Path(__file__).resolve().parent
+    / "skills"
+    / "novelai-n5-prompt-planner"
+    / "references"
+    / "runtime-comic-draw-mode.txt"
 )
 PROMPT_KNOWLEDGE_DIR = (
     Path(__file__).resolve().parent
@@ -464,6 +472,7 @@ class NovelAIWebPlugin(star.Star):
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
                 "/n5 漫画 <剧情> - 规划并生成完整的多格漫画页",
+                "/n5 漫画抽卡 <角色> - 为指定角色随机创作并生成四格漫画",
                 "/n5 参考 <修改要求> - 使用本条或引用消息中的图片",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 再来 - 复用自己上一次成功生成的最终 Prompt",
@@ -742,12 +751,17 @@ class NovelAIWebPlugin(star.Star):
     def _semantic_plan_errors(
         description: str,
         plan: PromptPlan,
+        *,
+        comic_mode: bool = False,
+        comic_draw_mode: bool = False,
     ) -> list[str]:
         """Find omissions that require deterministic post-processing.
 
         Args:
             description: Original user description before planning.
             plan: Parsed base prompt and dynamic character prompts.
+            comic_mode: Whether the request is a multi-panel comic page.
+            comic_draw_mode: Whether the planner must invent a four-panel story.
 
         Returns:
             Human-readable semantic errors; an empty list means validation passed.
@@ -761,6 +775,21 @@ class NovelAIWebPlugin(star.Star):
             combined_prompt,
         ):
             errors.append("缺少 nude")
+        if comic_mode:
+            if not re.search(r"(?i)\b(?:comic|manga|[1-4]koma)\b", plan["prompt"]):
+                errors.append("缺少漫画媒介锚点")
+            panel_numbers = {
+                int(value) for value in COMIC_PANEL_PATTERN.findall(plan["prompt"])
+            }
+            if not panel_numbers:
+                errors.append("缺少逐格页面描述")
+            if comic_draw_mode and panel_numbers != {1, 2, 3, 4}:
+                errors.append("漫画抽卡必须完整描述 Panel 1 至 Panel 4")
+            if comic_draw_mode and any(
+                value and not COMIC_PANEL_PATTERN.search(value)
+                for value in plan["character_prompts"].values()
+            ):
+                errors.append("漫画抽卡的人物 Prompt 缺少分格归属")
         return errors
 
     async def _plan_prompt(
@@ -772,6 +801,7 @@ class NovelAIWebPlugin(star.Star):
         metadata_prompt: str = "",
         *,
         comic_mode: bool = False,
+        comic_draw_mode: bool = False,
     ) -> PromptPlan:
         """Convert a user description into a validated NovelAI V5 prompt.
 
@@ -782,6 +812,7 @@ class NovelAIWebPlugin(star.Star):
             image_urls: Request-local images for native multimodal planning.
             metadata_prompt: Trusted NovelAI PNG metadata recovered from those images.
             comic_mode: Whether to plan a complete multi-panel comic page.
+            comic_draw_mode: Whether to invent a four-panel story from cast names.
 
         Returns:
             Validated base prompt and per-character dynamic prompts.
@@ -816,6 +847,16 @@ class NovelAIWebPlugin(star.Star):
             if not comic_prompt:
                 raise NovelAIWebError("NovelAI 漫画规划规则为空。")
             system_prompt += "\n\n" + comic_prompt
+        if comic_draw_mode:
+            try:
+                comic_draw_prompt = COMIC_DRAW_PLANNER_SYSTEM_PROMPT_PATH.read_text(
+                    encoding="utf-8"
+                ).strip()
+            except OSError as exc:
+                raise NovelAIWebError("NovelAI 漫画抽卡规划规则无法读取。") from exc
+            if not comic_draw_prompt:
+                raise NovelAIWebError("NovelAI 漫画抽卡规划规则为空。")
+            system_prompt += "\n\n" + comic_draw_prompt
         if required_character_slots:
             allowed_slots = ", ".join(f"`{slot}`" for slot in required_character_slots)
             slot_contract = (
@@ -854,7 +895,7 @@ class NovelAIWebPlugin(star.Star):
                     image_urls=list(image_urls),
                     system_prompt=system_prompt,
                     request_max_retries=2,
-                    temperature=0,
+                    temperature=0.7 if comic_draw_mode else 0,
                 )
             except Exception as exc:
                 raise NovelAIWebError(
@@ -896,7 +937,12 @@ class NovelAIWebPlugin(star.Star):
                         > max_length
                     ):
                         raise NovelAIWebError("Q版风格锁定后的 Prompt 超过长度上限。")
-                semantic_errors = self._semantic_plan_errors(description, plan)
+                semantic_errors = self._semantic_plan_errors(
+                    description,
+                    plan,
+                    comic_mode=comic_mode,
+                    comic_draw_mode=comic_draw_mode,
+                )
                 if semantic_errors:
                     raise NovelAIWebError(
                         "Prompt 规划遗漏或曲解核心语义："
@@ -3478,19 +3524,21 @@ class NovelAIWebPlugin(star.Star):
             await self._deliver_generated_image(event, output_path)
             return
 
-        if subcommand not in {"生成", "漫画", "参考", "原始"}:
+        if subcommand not in {"生成", "漫画", "漫画抽卡", "参考", "原始"}:
             yield event.plain_result(
                 "请输入生图描述。\n"
                 "示例：/n5 生成 雪夜车站里的银发少女\n"
                 "其他模式：\n"
                 "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
+                "/n5 漫画抽卡 <角色>：随机创作并生成四格漫画\n"
                 "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
                 "/n5 原始 <Prompt>：跳过提示词优化\n"
                 "发送 /n5 help 查看完整帮助。"
             )
             return
         prompt_text = arguments
-        comic_mode = subcommand == "漫画"
+        comic_draw_mode = subcommand == "漫画抽卡"
+        comic_mode = subcommand in {"漫画", "漫画抽卡"}
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
         if (
@@ -3582,6 +3630,7 @@ class NovelAIWebPlugin(star.Star):
                             image_context.image_urls,
                             image_context.metadata_prompt,
                             comic_mode=comic_mode,
+                            comic_draw_mode=comic_draw_mode,
                         )
                     else:
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)
