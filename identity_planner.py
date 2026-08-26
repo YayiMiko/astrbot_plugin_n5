@@ -30,6 +30,7 @@ Rules:
 - For a named character, appearance must preserve distinctive hair, eyes, anatomy, signature accessories, and other stable identity traits. Never include dresses, uniforms, shirts, coats, footwear, or any other clothing; clothing is request-specific and planned later. Do not include pose, scene, camera, artist tags, or quality tags.
 - If an attached image has NovelAI metadata, treat metadata identity as more reliable than visual guessing.
 - Ignore protected tokens matching __NAI_CHARACTER_SLOT_<number>__ because the plugin already resolved them.
+- When the user prompt contains a VERIFIED_CHARACTER_ALIASES block, every listed localized name is a confirmed fictional character and must appear exactly once in characters with the correct semantic role. Never omit one member of a multi-character request.
 - Use an empty characters list when there is no resolvable character.
 """
 
@@ -361,6 +362,32 @@ async def plan_identities(
         Ordered immutable identities and researched creative references.
     """
     user_prompt = description
+    normalized_description = re.sub(r"\s+", "", description).casefold()
+    matched_verified_aliases: list[tuple[str, str, str]] = []
+    for cache_key, canonical_tag in (verified_aliases or {}).items():
+        cached_name, separator, cached_work = cache_key.partition("\u001f")
+        if (
+            separator
+            and len(cached_name) >= 2
+            and cached_name in normalized_description
+            and canonical_tag.strip(" ,")
+        ):
+            matched_verified_aliases.append(
+                (cached_name, cached_work, canonical_tag.strip(" ,"))
+            )
+    if matched_verified_aliases:
+        alias_contract = [
+            {"source_name": name, "work": work, "canonical_tag": tag}
+            for name, work, tag in matched_verified_aliases
+        ]
+        user_prompt += (
+            "\n\n[VERIFIED_CHARACTER_ALIASES]\n"
+            + json.dumps(alias_contract, ensure_ascii=False)
+            + "\n[/VERIFIED_CHARACTER_ALIASES]\n"
+            "Every listed name occurs explicitly in the request. Include each one in "
+            "characters exactly once and classify its semantic role; do not treat the "
+            "canonical_tag field as user-authored prompt text."
+        )
     if metadata_prompt:
         user_prompt += (
             "\n\nNovelAI PNG metadata (trusted before visual inference):\n"
@@ -385,11 +412,46 @@ async def plan_identities(
         characters = []
     if not isinstance(references, list):
         references = []
+    planned_character_names = {
+        re.sub(r"\s+", "", str(item.get("source_name") or "")).casefold()
+        for item in characters
+        if isinstance(item, dict) and str(item.get("source_name") or "").strip()
+    }
+    for cached_name, cached_work, canonical_tag in matched_verified_aliases:
+        if cached_name not in planned_character_names:
+            recovered_role = "visible_subject"
+            alias_position = normalized_description.find(cached_name)
+            alias_context = normalized_description[
+                max(0, alias_position - 12) : alias_position + len(cached_name) + 12
+            ]
+            if re.search(
+                re.escape(cached_name) + r"(?:的)?(?:衣服|服装|穿搭|装束|制服)",
+                alias_context,
+            ):
+                recovered_role = "outfit_source"
+            elif re.search(r"(?:cosplay|cos|扮演|装扮成)", alias_context):
+                recovered_role = "cosplay_identity"
+            elif re.search(
+                r"(?:外观|长相|发型|外貌|造型).*" + re.escape(cached_name),
+                alias_context,
+            ):
+                recovered_role = "appearance_source"
+            characters.append(
+                {
+                    "source_name": cached_name,
+                    "work": cached_work,
+                    "role": recovered_role,
+                    "subject_type": "other",
+                    "candidate_tags": [canonical_tag],
+                    "appearance": "",
+                }
+            )
     reference_names = {
         str(item.get("source_name") or "").strip().casefold()
         for item in references
         if isinstance(item, dict) and str(item.get("source_name") or "").strip()
     }
+    matched_verified_names = {name for name, _, _ in matched_verified_aliases}
 
     identities: list[PlannedIdentity] = []
     for item in characters[:22]:
@@ -404,6 +466,12 @@ async def plan_identities(
         if subject_type not in {"girl", "boy", "other"}:
             subject_type = "other"
         appearance = str(item.get("appearance") or "").strip(" ,")
+        appearance_casefold = appearance.casefold()
+        if subject_type == "other":
+            if re.search(r"(?<!\w)(?:girl|woman|female)(?!\w)", appearance_casefold):
+                subject_type = "girl"
+            elif re.search(r"(?<!\w)(?:boy|man|male)(?!\w)", appearance_casefold):
+                subject_type = "boy"
         raw_candidates = item.get("candidate_tags", [])
         candidates = (
             [str(value).strip() for value in raw_candidates if str(value).strip()]
@@ -412,7 +480,11 @@ async def plan_identities(
         )
         if (
             not source_name
-            or source_name.casefold() in reference_names
+            or (
+                source_name.casefold() in reference_names
+                and re.sub(r"\s+", "", source_name).casefold()
+                not in matched_verified_names
+            )
             or CHARACTER_SLOT_PATTERN.search(source_name)
         ):
             continue
@@ -438,9 +510,18 @@ async def plan_identities(
         appearance_items = [
             value.strip() for value in appearance.split(",") if value.strip()
         ]
-        if any(
-            re.fullmatch(r"(?i)(?:1\s*)?(?:girl|boy|other)", value)
-            for value in appearance_items
+        if (
+            resolution.canonical_tag is not None
+            and not image_urls
+            and not metadata_prompt
+        ):
+            appearance_items = []
+        if (
+            any(
+                re.fullmatch(r"(?i)(?:1\s*)?(?:girl|boy|other)", value)
+                for value in appearance_items
+            )
+            or subject_type == "other"
         ):
             identity_parts = (identity_tag.strip(" ,"), *appearance_items)
         else:

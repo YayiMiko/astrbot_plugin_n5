@@ -118,8 +118,8 @@
   "delivery_verify_delay_seconds": {
     "description": "图片发送回执超时后的历史核验等待秒数",
     "type": "int",
-    "default": 3,
-    "hint": "核验未发现机器人刚发送的同尺寸图片时，插件只自动重试一次。"
+    "default": 8,
+    "hint": "等待 NapCat 消息历史落稳后再核验；未确认时不会自动重发图片。"
   },
   "rate_limit_max_retries": {
     "description": "NovelAI 返回 429 时的最大排队重试次数",

@@ -1233,6 +1233,18 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
         for panel in accepted_with_text["panels"]
     ] == ["title", "dialogue", "sfx", "narration"]
 
+    payload["panels"][1]["text_elements"][0]["content"] = (
+        "像这样蹲低是不是就可以让它慢慢靠近我了"
+    )
+    with pytest.raises(MODULE.NovelAIWebError, match="漫画文字过长"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            json.dumps(payload, ensure_ascii=False),
+            slots,
+            exact_four_panels=True,
+            require_full_cast_each_panel=True,
+        )
+    payload["panels"][1]["text_elements"][0]["content"] = "快一点！"
+
     payload["panels"][1]["text_elements"] = []
     payload["panels"][2]["shot"] = "close-up"
     with pytest.raises(MODULE.NovelAIWebError, match="景别不足"):
@@ -1426,6 +1438,8 @@ async def test_comic_draw_planner_retries_incomplete_panel_plan() -> None:
     ]
     assert "本次请求是“漫画抽卡”" in system_prompt
     assert "Panel 4" in plan["prompt"]
+    assert "4koma" not in plan["prompt"]
+    assert "four-panel comic page" in plan["prompt"]
     first_prompt = plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
     assert "[COMIC_DRAW_PLOT_SEED]" in first_prompt
     assert "抢夺包子" in first_prompt
