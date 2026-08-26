@@ -365,7 +365,7 @@ async def test_comic_mode_keeps_repeated_character_and_panel_concepts() -> None:
     assert plugin._plan_prompt.await_args.kwargs["comic_mode"] is True
     plugin._generate_from_api.assert_awaited_once_with(
         (
-            "nsfw, comic, 4koma, vertical four-panel page. Panel 1 shows the girl "
+            "nsfw, no text, comic, 4koma, vertical four-panel page. Panel 1 shows the girl "
             "waking up. Panel 2 shows her tail tangled in a blanket."
         ),
         (832, 1216),
@@ -373,7 +373,7 @@ async def test_comic_mode_keeps_repeated_character_and_panel_concepts() -> None:
             "girl, white hair, fox ears, fox tail, same pajamas in every panel, "
             "sleepy, surprised, struggling",
         ),
-        "lowres",
+        "lowres, text, captions, speech bubbles, subtitles, watermark, signature",
         ("bad ears",),
         image_model=MODULE.NOVELAI_MODEL,
     )
@@ -437,10 +437,12 @@ async def test_comic_draw_mode_invents_story_for_multiple_saved_characters() -> 
         "comic_draw_mode": True,
         "comic_draw_plot_seed": "",
         "comic_storyboard": STORYBOARD_JSON,
+        "comic_text_requested": False,
     }
     assert plugin._plan_comic_storyboard.await_args.kwargs == {
         "comic_draw_mode": True,
         "comic_draw_plot_seed": "",
+        "comic_text_requested": False,
     }
     assert plugin._plan_comic_storyboard.await_args.args[1] == (
         "__NAI_CHARACTER_SLOT_1__",
@@ -1011,6 +1013,7 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
         4000,
         comic_mode=True,
         comic_storyboard=STORYBOARD_JSON,
+        comic_text_requested=True,
     )
 
     system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
@@ -1021,6 +1024,58 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
     assert "[COMIC_STORYBOARD_BEGIN]" in planner_prompt
     assert '"shot":"medium shot"' in planner_prompt
     assert plan["prompt"].startswith("comic, 4koma")
+
+
+@pytest.mark.asyncio
+async def test_visual_only_comic_planner_retries_invented_rendered_text() -> None:
+    """Retry when final comic planning invents captions the user did not request."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "prompt_planner_enabled": True,
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    with_text = Mock(
+        completion_text=json.dumps(
+            {
+                "ok": True,
+                "prompt": (
+                    "comic, 4koma. Panel 1 Text: Start. Panel 2 action. "
+                    "Panel 3 reaction. Panel 4 result."
+                ),
+                "character_prompts": {},
+                "error": None,
+            }
+        )
+    )
+    visual_only = Mock(
+        completion_text=json.dumps(
+            {
+                "ok": True,
+                "prompt": (
+                    "comic, 4koma. Panel 1 setup. Panel 2 action. "
+                    "Panel 3 reaction. Panel 4 visual result."
+                ),
+                "character_prompts": {},
+                "error": None,
+            }
+        )
+    )
+    plugin.context = Mock()
+    plugin.context.llm_generate = AsyncMock(side_effect=[with_text, visual_only])
+
+    plan = await plugin._plan_prompt(
+        "无对白的四格漫画",
+        4000,
+        comic_mode=True,
+        comic_storyboard=STORYBOARD_JSON,
+    )
+
+    assert plugin.context.llm_generate.await_count == 2
+    system_prompt = plugin.context.llm_generate.await_args_list[0].kwargs[
+        "system_prompt"
+    ]
+    assert "本次用户没有要求任何可见文字" in system_prompt
+    assert "Text:" not in plan["prompt"]
 
 
 def test_storyboard_parser_validates_sequential_panels_and_cast() -> None:
@@ -1053,6 +1108,69 @@ def test_storyboard_parser_rejects_foreign_cast_slot() -> None:
             ("__NAI_CHARACTER_SLOT_1__",),
             exact_four_panels=True,
         )
+
+
+def test_storyboard_parser_enforces_visual_only_full_cast_panels() -> None:
+    """Reject invented dialogue and single-subject framing in a two-person draw."""
+    slots = ("__NAI_CHARACTER_SLOT_1__", "__NAI_CHARACTER_SLOT_2__")
+    payload = json.loads(STORYBOARD_JSON)
+    payload["ok"] = True
+    for panel in payload["panels"]:
+        panel["characters"] = list(slots)
+        panel["shot"] = "medium two-shot"
+
+    storyboard = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+        json.dumps(payload, ensure_ascii=False),
+        slots,
+        exact_four_panels=True,
+        require_full_cast_each_panel=True,
+    )
+    assert storyboard["page_layout"] == (
+        "vertical page with four stacked horizontal panels"
+    )
+    assert storyboard["reading_order"] == "top to bottom"
+
+    payload["panels"][1]["dialogue"] = ["角色一：快一点！"]
+    with pytest.raises(MODULE.NovelAIWebError, match="不得自行添加对白"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            json.dumps(payload, ensure_ascii=False),
+            slots,
+            exact_four_panels=True,
+            require_full_cast_each_panel=True,
+        )
+
+    payload["panels"][1]["dialogue"] = []
+    payload["panels"][2]["shot"] = "close-up"
+    with pytest.raises(MODULE.NovelAIWebError, match="景别不足"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            json.dumps(payload, ensure_ascii=False),
+            slots,
+            exact_four_panels=True,
+            require_full_cast_each_panel=True,
+        )
+
+
+@pytest.mark.asyncio
+async def test_requested_comic_dialogue_does_not_enable_no_text_guards() -> None:
+    """Preserve visible text only when the user explicitly requests dialogue."""
+    plugin = build_plugin("comic, 1koma, Panel 1, Text: 早上好")
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "漫画 狐娘说：早上好",
+        )
+    ]
+
+    assert plugin._plan_prompt.await_args.kwargs["comic_text_requested"] is True
+    assert plugin._plan_comic_storyboard.await_args.kwargs[
+        "comic_text_requested"
+    ] is True
+    generated_call = plugin._generate_from_api.await_args
+    assert "no text" not in generated_call.args[0]
+    assert generated_call.args[3] == ""
+    assert results == []
 
 
 @pytest.mark.asyncio
