@@ -472,7 +472,7 @@ class NovelAIWebPlugin(star.Star):
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
                 "/n5 漫画 <剧情> - 规划并生成完整的多格漫画页",
-                "/n5 漫画抽卡 <角色> - 为指定角色随机创作并生成四格漫画",
+                "/n5 漫画抽卡 <角色>[，剧情] - 随机创作或扩写指定剧情",
                 "/n5 参考 <修改要求> - 使用本条或引用消息中的图片",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 再来 - 复用自己上一次成功生成的最终 Prompt",
@@ -802,6 +802,7 @@ class NovelAIWebPlugin(star.Star):
         *,
         comic_mode: bool = False,
         comic_draw_mode: bool = False,
+        comic_draw_plot_seed: str = "",
     ) -> PromptPlan:
         """Convert a user description into a validated NovelAI V5 prompt.
 
@@ -813,6 +814,7 @@ class NovelAIWebPlugin(star.Star):
             metadata_prompt: Trusted NovelAI PNG metadata recovered from those images.
             comic_mode: Whether to plan a complete multi-panel comic page.
             comic_draw_mode: Whether to invent a four-panel story from cast names.
+            comic_draw_plot_seed: Optional user-specified event to expand.
 
         Returns:
             Validated base prompt and per-character dynamic prompts.
@@ -880,6 +882,23 @@ class NovelAIWebPlugin(star.Star):
                 "tall、long legs 或写实电影镜头等会稀释 Q 版比例的内容。"
             )
         retry_prompt = description
+        comic_draw_plot_contract = ""
+        if comic_draw_mode:
+            if comic_draw_plot_seed:
+                comic_draw_plot_contract = (
+                    "\n\n[COMIC_DRAW_PLOT_SEED]\n"
+                    f"{comic_draw_plot_seed}\n"
+                    "[/COMIC_DRAW_PLOT_SEED]\n"
+                    "这是用户指定的核心剧情事件，四格必须围绕它形成因果动作链，"
+                    "只能扩写，不能替换、弱化成背景元素或改成静态差分。"
+                )
+            else:
+                comic_draw_plot_contract = (
+                    "\n\n[COMIC_DRAW_PLOT_SEED]\nAI_INVENT_STORY\n"
+                    "[/COMIC_DRAW_PLOT_SEED]\n"
+                    "用户没有指定剧情，由你创作完整的四拍事件。"
+                )
+            retry_prompt += comic_draw_plot_contract
         if metadata_prompt:
             retry_prompt += (
                 "\n\n以下为引用图中的 NovelAI PNG Prompt 元数据，身份事实优先于视觉猜测，"
@@ -963,7 +982,9 @@ class NovelAIWebPlugin(star.Star):
                         f"上一次输出无效：{exc} 请重新规划以下原始描述，"
                         f"{retry_focus}人物槽位的本图服装与道具必须写入"
                         "对应 character_prompts，"
-                        f"只返回协议规定的一行 JSON。{slot_contract}\n" + description
+                        f"只返回协议规定的一行 JSON。{slot_contract}\n"
+                        + description
+                        + comic_draw_plot_contract
                     )
 
         raise last_error or NovelAIWebError("Prompt 规划失败。")
@@ -3530,7 +3551,7 @@ class NovelAIWebPlugin(star.Star):
                 "示例：/n5 生成 雪夜车站里的银发少女\n"
                 "其他模式：\n"
                 "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
-                "/n5 漫画抽卡 <角色>：随机创作并生成四格漫画\n"
+                "/n5 漫画抽卡 <角色>[，剧情]：随机创作或扩写指定剧情\n"
                 "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
                 "/n5 原始 <Prompt>：跳过提示词优化\n"
                 "发送 /n5 help 查看完整帮助。"
@@ -3539,6 +3560,7 @@ class NovelAIWebPlugin(star.Star):
         prompt_text = arguments
         comic_draw_mode = subcommand == "漫画抽卡"
         comic_mode = subcommand in {"漫画", "漫画抽卡"}
+        comic_draw_plot_seed = ""
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
         if (
@@ -3601,6 +3623,35 @@ class NovelAIWebPlugin(star.Star):
                     image_context,
                     image_model,
                 )
+                if comic_draw_mode:
+                    explicit_plot = re.search(
+                        r"(?:剧情|情节)\s*[:：]\s*(.+)$",
+                        prompt_text,
+                        re.DOTALL,
+                    )
+                    plot_candidates = (
+                        [explicit_plot.group(1)]
+                        if explicit_plot
+                        else [
+                            prompt_text[separator.end() :]
+                            for separator in re.finditer(r"[,，;；]", prompt_text)
+                        ]
+                    )
+                    if not plot_candidates and character_replacements:
+                        plot_candidates = [prompt_text]
+                    for candidate in plot_candidates:
+                        candidate = CHARACTER_SLOT_PATTERN.sub(" ", candidate)
+                        candidate = re.sub(
+                            r"(?i)\bthe same character\b",
+                            " ",
+                            candidate,
+                        )
+                        candidate = re.sub(r"\s+", " ", candidate).strip(
+                            " 和与及同、,，;；:：/&+"
+                        )
+                        if candidate:
+                            comic_draw_plot_seed = candidate
+                            break
                 if creative_reference_context:
                     prompt_text += "\n\n" + creative_reference_context
             character_expansion = sum(
@@ -3631,6 +3682,7 @@ class NovelAIWebPlugin(star.Star):
                             image_context.metadata_prompt,
                             comic_mode=comic_mode,
                             comic_draw_mode=comic_draw_mode,
+                            comic_draw_plot_seed=comic_draw_plot_seed,
                         )
                     else:
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)

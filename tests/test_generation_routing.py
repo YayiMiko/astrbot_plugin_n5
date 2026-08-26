@@ -408,12 +408,63 @@ async def test_comic_draw_mode_invents_story_for_multiple_saved_characters() -> 
     assert plugin._plan_prompt.await_args.kwargs == {
         "comic_mode": True,
         "comic_draw_mode": True,
+        "comic_draw_plot_seed": "",
     }
     generated_call = plugin._generate_from_api.await_args
     assert "Panel 1" in generated_call.args[0]
     assert "Panel 4" in generated_call.args[0]
     assert len(generated_call.args[2]) == 2
     assert "solo" not in generated_call.args[0]
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_comic_draw_mode_extracts_user_plot_after_cast() -> None:
+    """Pass a user event after the cast as a hard comic plot seed."""
+    plugin = build_plugin()
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "空",
+            "boy, aether (genshin impact), blonde hair",
+            "",
+        ),
+        (
+            "__NAI_CHARACTER_SLOT_2__",
+            "荧",
+            "girl, lumine (genshin impact), blonde hair",
+            "",
+        ),
+    ]
+    plugin._resolve_character_slots = AsyncMock(
+        return_value=(
+            "__NAI_CHARACTER_SLOT_1__和__NAI_CHARACTER_SLOT_2__，抢夺包子",
+            replacements,
+        )
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": (
+                "comic, 4koma. Panel 1 shows one steamed bun between the twins. "
+                "Panel 2 shows both reaching for it. Panel 3 shows a fast tug-of-war. "
+                "Panel 4 reveals the bun split evenly in their hands."
+            ),
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": "Panel 1 watching the bun, Panel 2 reaching, Panel 3 pulling, Panel 4 smiling",
+                "__NAI_CHARACTER_SLOT_2__": "Panel 1 holding a plate, Panel 2 reaching, Panel 3 pulling, Panel 4 smiling",
+            },
+        }
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "漫画抽卡 原神空和荧，抢夺包子",
+        )
+    ]
+
+    assert plugin._plan_prompt.await_args.kwargs["comic_draw_plot_seed"] == "抢夺包子"
     assert results == []
 
 
@@ -562,7 +613,7 @@ async def test_empty_n5_command_returns_copyable_examples() -> None:
             "示例：/n5 生成 雪夜车站里的银发少女\n"
             "其他模式：\n"
             "/n5 漫画 <剧情>：规划并生成完整的多格漫画页\n"
-            "/n5 漫画抽卡 <角色>：随机创作并生成四格漫画\n"
+            "/n5 漫画抽卡 <角色>[，剧情]：随机创作或扩写指定剧情\n"
             "/n5 参考 <修改要求>：结合本条或引用消息中的图片生成\n"
             "/n5 原始 <Prompt>：跳过提示词优化\n"
             "发送 /n5 help 查看完整帮助。",
@@ -961,6 +1012,7 @@ async def test_comic_draw_planner_retries_incomplete_panel_plan() -> None:
         ("__NAI_CHARACTER_SLOT_1__",),
         comic_mode=True,
         comic_draw_mode=True,
+        comic_draw_plot_seed="抢夺包子",
     )
 
     assert plugin.context.llm_generate.await_count == 2
@@ -973,8 +1025,13 @@ async def test_comic_draw_planner_retries_incomplete_panel_plan() -> None:
     ]
     assert "本次请求是“漫画抽卡”" in system_prompt
     assert "Panel 4" in plan["prompt"]
+    first_prompt = plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
+    assert "[COMIC_DRAW_PLOT_SEED]" in first_prompt
+    assert "抢夺包子" in first_prompt
+    assert "只能扩写" in first_prompt
     retry_prompt = plugin.context.llm_generate.await_args_list[1].kwargs["prompt"]
     assert "Panel 1 至 Panel 4" in retry_prompt
+    assert "抢夺包子" in retry_prompt
 
 
 @pytest.mark.asyncio
