@@ -168,8 +168,11 @@ async def _repair_candidates_with_web(
     if event is None or not hasattr(context, "get_llm_tool_manager"):
         return []
     try:
-        full_tools = context.get_llm_tool_manager().get_full_tool_set()
+        tool_manager = context.get_llm_tool_manager()
+        full_tools = tool_manager.get_full_tool_set()
         search_tool = full_tools.get_tool("web_search_tavily")
+        if search_tool is None:
+            search_tool = tool_manager.get_builtin_tool("web_search_tavily")
         if search_tool is None or not getattr(search_tool, "active", True):
             return []
         tools = ToolSet()
@@ -285,8 +288,11 @@ async def _research_creative_reference(
     if event is None or not hasattr(context, "get_llm_tool_manager"):
         return fallback
     try:
-        full_tools = context.get_llm_tool_manager().get_full_tool_set()
+        tool_manager = context.get_llm_tool_manager()
+        full_tools = tool_manager.get_full_tool_set()
         search_tool = full_tools.get_tool("web_search_tavily")
+        if search_tool is None:
+            search_tool = tool_manager.get_builtin_tool("web_search_tavily")
         if search_tool is None or not getattr(search_tool, "active", True):
             return fallback
         tools = ToolSet()
