@@ -204,12 +204,17 @@ async def test_identity_planner_repairs_failed_romanization_with_web_evidence() 
         @staticmethod
         def get_tool(name: str):
             assert name == "web_search_tavily"
-            return SimpleNamespace(name=name, active=True)
+            return None
 
     class FakeToolManager:
         @staticmethod
         def get_full_tool_set():
             return FakeToolSet()
+
+        @staticmethod
+        def get_builtin_tool(tool_name):
+            assert tool_name == "web_search_tavily"
+            return SimpleNamespace(name="web_search_tavily", active=True)
 
     class FakeContext:
         @staticmethod
