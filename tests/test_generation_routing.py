@@ -1862,24 +1862,24 @@ async def test_group_history_confirmation_requires_message_id_and_image_md5(
 
 
 @pytest.mark.asyncio
-async def test_delivery_retries_once_then_sends_failure_notice() -> None:
-    """Retry one unconfirmed ACK timeout without regenerating the image."""
+async def test_delivery_ack_timeout_does_not_automatically_resend_image() -> None:
+    """Avoid duplicate images when the first send succeeds but its ACK times out."""
     plugin = build_plugin()
     event = FakeEvent()
     event.send = AsyncMock(
-        side_effect=[AckTimeoutError(), AckTimeoutError(), None],
+        side_effect=[AckTimeoutError(), None],
     )
 
     await plugin._deliver_generated_image(event, Path("generated.png"))
 
-    assert event.send.await_count == 3
-    assert plugin._delivery_history_contains_image.await_count == 2
+    assert event.send.await_count == 2
+    assert plugin._delivery_history_contains_image.await_count == 1
     assert plugin._update_delivery_task.await_args_list[-1].args[1] == (
-        "send_failed_after_retry"
+        "delivery_uncertain"
     )
     assert event.send.await_args_list[-1].args[0] == (
         "plain",
-        "图片已经生成，但 QQ 图片发送失败。发送 /n5 重发 可再次发送，"
+        "图片发送回执超时，可能已经送达；如果没有看到，发送 /n5 重发，"
         "不会重新消耗 NAI 点数。",
     )
 

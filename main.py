@@ -2926,7 +2926,7 @@ class NovelAIWebPlugin(star.Star):
         task_id: str | None = None,
         retry_count: int = 0,
     ) -> None:
-        """Send a standalone image with ACK reconciliation and one retry.
+        """Send one image at most once and reconcile ambiguous ACK timeouts.
 
         Args:
             event: Original request event used for direct platform delivery.
@@ -2937,24 +2937,15 @@ class NovelAIWebPlugin(star.Star):
         active_task_id = task_id or await self._record_delivery_task(event, output_path)
         current_retry_count = max(0, retry_count)
         last_error = ""
-        for attempt in range(2):
-            if attempt == 1:
-                current_retry_count += 1
-            started_at = int(datetime.now().timestamp())
-            try:
-                await event.send(event.image_result(str(output_path)))
-            except Exception as exc:
-                last_error = str(
-                    getattr(exc, "wording", "") or getattr(exc, "message", "") or exc
-                )[:500]
-                if not self._is_delivery_ack_timeout(exc):
-                    await self._update_delivery_task(
-                        active_task_id,
-                        "send_failed",
-                        retry_count=current_retry_count,
-                        error=last_error,
-                    )
-                    break
+        delivery_uncertain = False
+        started_at = int(datetime.now().timestamp())
+        try:
+            await event.send(event.image_result(str(output_path)))
+        except Exception as exc:
+            last_error = str(
+                getattr(exc, "wording", "") or getattr(exc, "message", "") or exc
+            )[:500]
+            if self._is_delivery_ack_timeout(exc):
                 await self._update_delivery_task(
                     active_task_id,
                     "ack_timeout",
@@ -2979,37 +2970,41 @@ class NovelAIWebPlugin(star.Star):
                         error=last_error,
                     )
                     return
-                if attempt == 0:
-                    logger.warning(
-                        "[n5] image ACK timed out and history did not confirm delivery; "
-                        "retrying once. task=%s path=%s",
-                        active_task_id,
-                        output_path,
-                    )
-                    continue
+                delivery_uncertain = True
                 await self._update_delivery_task(
                     active_task_id,
-                    "send_failed_after_retry",
+                    "delivery_uncertain",
                     retry_count=current_retry_count,
                     error=last_error,
                 )
-                break
             else:
                 await self._update_delivery_task(
                     active_task_id,
-                    "sent",
+                    "send_failed",
                     retry_count=current_retry_count,
+                    error=last_error,
                 )
-                return
+        else:
+            await self._update_delivery_task(
+                active_task_id,
+                "sent",
+                retry_count=current_retry_count,
+            )
+            return
 
         logger.warning(
-            "[n5] generated image delivery failed. task=%s path=%s error=%s",
+            "[n5] generated image delivery was not confirmed. "
+            "task=%s path=%s uncertain=%s error=%s",
             active_task_id,
             output_path,
+            delivery_uncertain,
             last_error,
         )
         notice = (
-            "图片已经生成，但 QQ 图片发送失败。发送 /n5 重发 可再次发送，"
+            "图片发送回执超时，可能已经送达；如果没有看到，发送 /n5 重发，"
+            "不会重新消耗 NAI 点数。"
+            if delivery_uncertain
+            else "图片已经生成，但 QQ 图片发送失败。发送 /n5 重发 可再次发送，"
             "不会重新消耗 NAI 点数。"
         )
         try:
@@ -3649,6 +3644,8 @@ class NovelAIWebPlugin(star.Star):
                     "sent": "已确认发送",
                     "ack_timeout": "发送回执超时",
                     "sent_after_ack_timeout": "历史记录已确认送达",
+                    "confirmed_in_history": "历史记录已强确认送达",
+                    "delivery_uncertain": "发送结果不确定",
                     "send_failed": "发送失败",
                     "send_failed_after_retry": "自动重试后仍失败",
                 }
