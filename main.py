@@ -1310,7 +1310,8 @@ class NovelAIWebPlugin(star.Star):
                         int(value)
                         for value in COMIC_PANEL_PATTERN.findall(plan["prompt"])
                     ]
-                    if planned_panels != expected_panels:
+                    first_appearance_order = list(dict.fromkeys(planned_panels))
+                    if first_appearance_order != expected_panels:
                         semantic_errors.append("最终 Prompt 未完整保留分镜格数与顺序")
                     quoted_rendered_texts = re.findall(r'"([^"\r\n]+)"', plan["prompt"])
                     if quoted_rendered_texts != expected_rendered_texts:
