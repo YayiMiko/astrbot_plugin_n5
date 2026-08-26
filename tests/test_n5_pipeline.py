@@ -85,6 +85,70 @@ async def test_official_suggestions_require_an_exact_normalized_match() -> None:
 
 
 @pytest.mark.asyncio
+async def test_researched_identity_reconciles_name_only_with_confirmed_work() -> None:
+    """Reconcile Ema/Emma only when NovelAI also confirms the researched work."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        prompt = request.url.params["prompt"].casefold()
+        responses = {
+            "sakuraba emma (mahou shoujo no majo saiban)": [
+                "sakura (ukagaka)",
+                "sakurai emma (anime)",
+            ],
+            "mahou shoujo no majo saiban": [
+                "mahou shoujo no majo saiban",
+            ],
+            "sakuraba": [
+                "sakuraba ema",
+                "sakuraba kaoru",
+            ],
+            "emma": ["emma (anime)"],
+        }
+        return httpx.Response(
+            200,
+            json={"tags": [{"tag": tag} for tag in responses.get(prompt, [])]},
+        )
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resolver = NovelAITagResolver(
+            client,
+            "https://image.novelai.net",
+            "nai-diffusion-5-curated",
+        )
+        result = await resolver.resolve_researched(
+            "樱羽艾玛",
+            ["Sakuraba Emma (Mahou Shoujo no Majo Saiban)"],
+        )
+
+    assert result.canonical_tag == "sakuraba ema"
+
+
+@pytest.mark.asyncio
+async def test_unresearched_or_wrong_work_does_not_enable_near_match() -> None:
+    """Reject nearby official names without both web grounding and work evidence."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        prompt = request.url.params["prompt"].casefold()
+        tags = ["sakuraba ema"] if prompt in {"sakuraba emma", "sakuraba"} else []
+        return httpx.Response(200, json={"tags": [{"tag": tag} for tag in tags]})
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+        resolver = NovelAITagResolver(
+            client,
+            "https://image.novelai.net",
+            "nai-diffusion-5-curated",
+        )
+        unresearched = await resolver.resolve("樱羽艾玛", ["Sakuraba Emma"])
+        wrong_work = await resolver.resolve_researched(
+            "樱羽艾玛",
+            ["Sakuraba Emma (Unrelated Work)"],
+        )
+
+    assert unresearched.canonical_tag is None
+    assert wrong_work.canonical_tag is None
+
+
+@pytest.mark.asyncio
 async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
     """Keep the official identity tag outside the scene planner's control."""
 
@@ -178,11 +242,16 @@ async def test_identity_planner_repairs_failed_romanization_with_web_evidence() 
         async def tool_loop_agent(**kwargs):
             assert kwargs["max_steps"] == 3
             assert kwargs["tools"].get_tool("web_search_tavily") is not None
+            assert "original-script name" in kwargs["prompt"]
+            assert "Do not Anglicize kana names" in kwargs["system_prompt"]
             return SimpleNamespace(
                 completion_text=json.dumps(
                     {
+                        "native_name": "カルテジア",
                         "official_name": "Cartethyia",
                         "work_en": "Wuthering Waves",
+                        "romanized_aliases": ["Cartethyia"],
+                        "work_aliases": ["Wuthering Waves"],
                         "candidate_tags": [
                             "cartethyia (wuthering waves)",
                             "cartethyia",
