@@ -35,7 +35,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 
 所有漫画请求先读取 [references/runtime-comic-storyboard.txt](references/runtime-comic-storyboard.txt)，独立生成并验证镜头级分镜，再把分镜作为权威结构交给最终 Prompt 规划器。最终规划不得更改格数、顺序、景别、机位、人物站位、动作、状态变化、连续性或对白。
 
-用户未明确要求可见文字时，分镜 dialogue 必须为空，最终 Prompt 使用纯视觉叙事并配合 `no text` 与针对性 Undesired Content；多角色漫画抽卡应保持全部核心角色逐格共同入镜，避免单人特写造成角色中途消失。
+分镜可以在确实改善叙事时生成结构化的对白、标题、旁白和拟声词，并为每项绑定格号、说话者、位置、样式和准确原文。最终规划只在对应 Panel 段落用 ASCII 双引号引用原文；插件负责按照官方文字渲染规则，在所有画面指令之后追加唯一的 `Text:` 块。用户明确要求纯画面或分镜没有文字时，才使用 `no text` 与针对性 Undesired Content。多角色漫画抽卡应保持全部核心角色逐格共同入镜，避免单人特写造成角色中途消失。
 
 ## 必守规则
 
