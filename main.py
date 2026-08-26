@@ -4,6 +4,7 @@ import asyncio
 import base64
 import binascii
 import ctypes
+import hashlib
 import json
 import os
 import re
@@ -2824,11 +2825,12 @@ class NovelAIWebPlugin(star.Star):
 
         Args:
             event: Original message event carrying the OneBot client.
-            output_path: Image whose byte size identifies the attempted upload.
+            output_path: Image whose byte size and MD5 identify the attempted upload.
             started_at: Unix timestamp immediately before the send attempt.
 
         Returns:
-            True when a recent self-sent image with the same byte size exists.
+            True when a recent self-sent message has a valid message ID and the
+            same image size and MD5 fingerprint.
         """
         bot = getattr(event, "bot", None)
         if bot is None or not hasattr(bot, "call_action"):
@@ -2869,6 +2871,10 @@ class NovelAIWebPlugin(star.Star):
             return False
         try:
             expected_size = output_path.stat().st_size
+            expected_md5 = hashlib.md5(
+                output_path.read_bytes(),
+                usedforsecurity=False,
+            ).hexdigest()
         except OSError:
             return False
         for message in messages:
@@ -2880,7 +2886,15 @@ class NovelAIWebPlugin(star.Star):
                 message_time = int(message.get("time", 0))
             except (TypeError, ValueError):
                 continue
-            if str(sender_id) != self_id or message_time < started_at - 5:
+            message_id = str(
+                message.get("message_id", "") or message.get("real_id", "")
+            ).strip()
+            if (
+                str(sender_id) != self_id
+                or message_time < started_at - 5
+                or not message_id
+                or message_id == "0"
+            ):
                 continue
             segments = message.get("message", [])
             if not isinstance(segments, list):
@@ -2895,7 +2909,12 @@ class NovelAIWebPlugin(star.Star):
                     file_size = int(data.get("file_size", -1))
                 except (TypeError, ValueError):
                     continue
-                if file_size == expected_size:
+                fingerprint_source = json.dumps(
+                    data,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                ).casefold()
+                if file_size == expected_size and expected_md5 in fingerprint_source:
                     return True
         return False
 
@@ -2955,7 +2974,7 @@ class NovelAIWebPlugin(star.Star):
                 ):
                     await self._update_delivery_task(
                         active_task_id,
-                        "sent_after_ack_timeout",
+                        "confirmed_in_history",
                         retry_count=current_retry_count,
                         error=last_error,
                     )

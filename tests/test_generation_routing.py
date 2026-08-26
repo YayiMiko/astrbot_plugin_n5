@@ -1,6 +1,7 @@
 """Regression tests for NovelAI generation routing and replies."""
 
 import asyncio
+import hashlib
 import importlib.util
 import json
 import sys
@@ -1757,18 +1758,19 @@ async def test_delivery_ack_timeout_is_confirmed_from_group_history() -> None:
     assert event.send.await_count == 1
     plugin._delivery_history_contains_image.assert_awaited_once()
     assert plugin._update_delivery_task.await_args_list[-1].args[1] == (
-        "sent_after_ack_timeout"
+        "confirmed_in_history"
     )
 
 
 @pytest.mark.asyncio
-async def test_group_history_confirmation_matches_self_time_and_file_size(
+async def test_group_history_confirmation_requires_message_id_and_image_md5(
     tmp_path: Path,
 ) -> None:
-    """Confirm only the bot's matching recent image, not another member's image."""
+    """Reject size-only history entries and require a strong image fingerprint."""
     plugin = build_plugin()
     output_path = tmp_path / "generated.png"
     output_path.write_bytes(b"image-bytes")
+    image_md5 = hashlib.md5(b"image-bytes", usedforsecurity=False).hexdigest()
     event = AccessEvent()
     event.message_obj = SimpleNamespace(raw_message={"self_id": 2806797912})
     event.bot = SimpleNamespace(
@@ -1795,6 +1797,20 @@ async def test_group_history_confirmation_matches_self_time_and_file_size(
                             }
                         ],
                     },
+                    {
+                        "message_id": 9001,
+                        "time": 202,
+                        "sender": {"user_id": 2806797912},
+                        "message": [
+                            {
+                                "type": "image",
+                                "data": {
+                                    "file_size": str(len(b"image-bytes")),
+                                    "file": f"{image_md5.upper()}.image",
+                                },
+                            }
+                        ],
+                    },
                 ]
             }
         )
@@ -1816,6 +1832,33 @@ async def test_group_history_confirmation_matches_self_time_and_file_size(
         disable_get_url=True,
         parse_mult_msg=False,
     )
+
+    event.bot.call_action.reset_mock()
+    event.bot.call_action.return_value = {
+        "messages": [
+            {
+                "message_id": 9002,
+                "time": 203,
+                "sender": {"user_id": 2806797912},
+                "message": [
+                    {
+                        "type": "image",
+                        "data": {"file_size": str(len(b"image-bytes"))},
+                    }
+                ],
+            }
+        ]
+    }
+    size_only_confirmation = (
+        await MODULE.NovelAIWebPlugin._delivery_history_contains_image(
+            plugin,
+            event,
+            output_path,
+            200,
+        )
+    )
+
+    assert size_only_confirmation is False
 
 
 @pytest.mark.asyncio
