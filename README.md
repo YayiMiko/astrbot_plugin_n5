@@ -84,7 +84,7 @@ pip install -r requirements.txt
 | `max_character_prompt_length` | 单个人物 Prompt 最大字符数 | `2000` |
 | `max_characters_per_prompt` | 单次描述自动引用人物的上限（`1`–`6`） | `4` |
 | `timeout_seconds` | 等待 NovelAI API 生成的超时秒数 | `180` |
-| `delivery_verify_delay_seconds` | 图片 ACK 超时后等待 NapCat 历史核验的秒数 | `3` |
+| `delivery_verify_delay_seconds` | 图片 ACK 超时后等待 NapCat 历史核验的秒数 | `8` |
 | `rate_limit_max_retries` | 429 最大排队重试次数 | `8` |
 | `rate_limit_wait_seconds` | 429 固定重试间隔秒数 | `5` |
 | `max_response_bytes` | NovelAI API 响应最大字节数 | `16777216` |

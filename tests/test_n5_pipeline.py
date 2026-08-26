@@ -268,6 +268,68 @@ async def test_verified_alias_cache_skips_network_repair() -> None:
     assert references == []
     assert identities[0].verified is True
     assert identities[0].canonical_tag == canonical
+    assert identities[0].immutable_prompt == f"girl, {canonical}"
+
+
+@pytest.mark.asyncio
+async def test_verified_alias_contract_recovers_an_omitted_second_character() -> None:
+    """Keep every explicitly named cached character when the model drops one."""
+
+    prompts: list[str] = []
+
+    class FakeContext:
+        @staticmethod
+        async def llm_generate(**kwargs):
+            prompts.append(kwargs["prompt"])
+            return SimpleNamespace(
+                completion_text=json.dumps(
+                    {
+                        "characters": [
+                            {
+                                "source_name": "卡提希娅",
+                                "work": "Wuthering Waves",
+                                "role": "visible_subject",
+                                "subject_type": "girl",
+                                "candidate_tags": [
+                                    "cartethyia (wuthering waves)"
+                                ],
+                                "appearance": "girl, blonde hair, cat ears",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+    class RejectUnexpectedResolver:
+        @staticmethod
+        async def resolve(source_name: str, candidates: list[str]):
+            raise AssertionError("verified cache should skip official lookup")
+
+    aliases = {
+        identity_alias_key(
+            "卡提希娅", "Wuthering Waves"
+        ): "cartethyia (wuthering waves)",
+        identity_alias_key(
+            "守岸人", "Wuthering Waves"
+        ): "shorekeeper (wuthering waves)",
+    }
+    identities, _ = await plan_identities(
+        FakeContext(),
+        "deepseek/deepseek-v4-flash-vision-exp",
+        "卡提希娅教守岸人接近野猫",
+        (),
+        "",
+        RejectUnexpectedResolver(),
+        verified_aliases=aliases,
+    )
+
+    assert "[VERIFIED_CHARACTER_ALIASES]" in prompts[0]
+    assert [identity.source_name for identity in identities] == ["卡提希娅", "守岸人"]
+    assert identities[0].immutable_prompt == (
+        "girl, cartethyia (wuthering waves)"
+    )
+    assert identities[1].immutable_prompt == "shorekeeper (wuthering waves)"
 
 
 @pytest.mark.asyncio

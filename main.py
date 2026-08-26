@@ -921,8 +921,23 @@ class NovelAIWebPlugin(star.Star):
                     raise NovelAIWebError("漫画分镜的文字内容、位置或样式为空。")
                 if '"' in element["content"]:
                     raise NovelAIWebError("漫画文字原文不能包含 ASCII 双引号。")
-                if len(element["content"]) > 60:
-                    raise NovelAIWebError("单个漫画文字元素不得超过 60 个字符。")
+                text_units = sum(
+                    2
+                    if (
+                        "\u2e80" <= character <= "\u9fff"
+                        or "\uf900" <= character <= "\ufaff"
+                        or "\u3040" <= character <= "\u30ff"
+                        or "\uac00" <= character <= "\ud7af"
+                    )
+                    else 1
+                    for character in element["content"]
+                )
+                max_text_units = 12 if element["kind"] == "sfx" else 28
+                if text_units > max_text_units:
+                    raise NovelAIWebError(
+                        "漫画文字过长：对白、标题和旁白最多 14 个汉字，"
+                        "拟声词最多 6 个汉字。"
+                    )
                 if element["kind"] == "dialogue":
                     if not element["speaker"]:
                         raise NovelAIWebError("漫画对白必须绑定说话者。")
@@ -938,13 +953,27 @@ class NovelAIWebPlugin(star.Star):
 
         if allowed_slots - used_slots:
             raise NovelAIWebError("漫画分镜遗漏了本次请求中的出场角色。")
-        rendered_text_length = sum(
-            len(element["content"])
+        rendered_text_elements = [
+            element
             for panel in storyboard["panels"]
             for element in panel["text_elements"]
+        ]
+        if len(rendered_text_elements) > 6:
+            raise NovelAIWebError("整页漫画最多使用 6 个文字元素。")
+        rendered_text_units = sum(
+            2
+            if (
+                "\u2e80" <= character <= "\u9fff"
+                or "\uf900" <= character <= "\ufaff"
+                or "\u3040" <= character <= "\u30ff"
+                or "\uac00" <= character <= "\ud7af"
+            )
+            else 1
+            for element in rendered_text_elements
+            for character in element["content"]
         )
-        if rendered_text_length > 120:
-            raise NovelAIWebError("整页漫画文字总长度不得超过 120 个字符。")
+        if rendered_text_units > 80:
+            raise NovelAIWebError("整页漫画文字总量过大，请压缩到约 40 个汉字以内。")
         return storyboard
 
     async def _plan_comic_storyboard(
@@ -1249,6 +1278,12 @@ class NovelAIWebPlugin(star.Star):
                     max_length,
                     required_character_slots,
                 )
+                if comic_draw_mode:
+                    plan["prompt"] = re.sub(
+                        r"(?i)\b4koma\b",
+                        "four-panel comic page",
+                        plan["prompt"],
+                    )
                 if CHIBI_SOURCE_PATTERN.search(description):
                     prompt_items = [
                         item.strip()
@@ -2955,7 +2990,7 @@ class NovelAIWebPlugin(star.Star):
                 await asyncio.sleep(
                     max(
                         0.0,
-                        float(self.config.get("delivery_verify_delay_seconds", 3)),
+                        float(self.config.get("delivery_verify_delay_seconds", 8)),
                     )
                 )
                 if await self._delivery_history_contains_image(
