@@ -508,9 +508,80 @@ async def test_comic_draw_mode_extracts_user_plot_after_cast() -> None:
     ]
 
     assert plugin._plan_prompt.await_args.kwargs["comic_draw_plot_seed"] == "抢夺包子"
-    assert plugin._plan_comic_storyboard.await_args.kwargs[
-        "comic_draw_plot_seed"
-    ] == "抢夺包子"
+    assert (
+        plugin._plan_comic_storyboard.await_args.kwargs["comic_draw_plot_seed"]
+        == "抢夺包子"
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_comic_draw_mode_repairs_partial_cast_and_keeps_plot_slot() -> None:
+    """Retry partial cast discovery and keep the acting slot in the plot seed."""
+    plugin = build_plugin()
+    first_replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "卡提希娅",
+            "girl, cartethyia (wuthering waves)",
+            "",
+        )
+    ]
+    complete_replacements = [
+        *first_replacements,
+        (
+            "__NAI_CHARACTER_SLOT_2__",
+            "菲比",
+            "girl, phoebe (wuthering waves)",
+            "",
+        ),
+    ]
+    plugin._resolve_planned_character_slots = AsyncMock(
+        side_effect=[
+            (
+                "鸣潮角色__NAI_CHARACTER_SLOT_1__与菲比在列车旁告别，随后菲比登上列车",
+                first_replacements,
+                [],
+                "",
+            ),
+            (
+                "鸣潮角色__NAI_CHARACTER_SLOT_1__与__NAI_CHARACTER_SLOT_2__在列车旁告别，随后__NAI_CHARACTER_SLOT_2__登上列车",
+                complete_replacements,
+                [],
+                "",
+            ),
+        ]
+    )
+    plugin._plan_prompt = AsyncMock(
+        return_value={
+            "prompt": (
+                "comic, Panel 1 farewell, Panel 2 boarding, "
+                "Panel 3 train departure, Panel 4 final wave"
+            ),
+            "character_prompts": {
+                "__NAI_CHARACTER_SLOT_1__": "Panel 1 through Panel 4 on platform",
+                "__NAI_CHARACTER_SLOT_2__": "Panel 1 farewell, Panel 2 boards train",
+            },
+        }
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(),
+            "漫画抽卡 鸣潮角色卡提希娅与菲比在列车旁告别，随后菲比登上列车",
+        )
+    ]
+
+    assert plugin._resolve_planned_character_slots.await_count == 2
+    assert (
+        plugin._plan_comic_storyboard.await_args.kwargs["comic_draw_plot_seed"]
+        == "随后__NAI_CHARACTER_SLOT_2__登上列车"
+    )
+    assert plugin._plan_comic_storyboard.await_args.args[1] == (
+        "__NAI_CHARACTER_SLOT_1__",
+        "__NAI_CHARACTER_SLOT_2__",
+    )
     assert results == []
 
 
@@ -1024,7 +1095,7 @@ async def test_comic_planner_receives_page_and_text_block_rules() -> None:
                 "ok": True,
                 "prompt": (
                     "comic, 4koma, reading order Panel 1 to Panel 2 to Panel 3 "
-                    'to Panel 4. Panel 1 shows a fox girl with a white speech '
+                    "to Panel 4. Panel 1 shows a fox girl with a white speech "
                     'bubble saying "Good morning!". Panel 2 shows breakfast. '
                     "Panel 3 shows a rush. Panel 4 shows her leaving.\n"
                     "Text: Good morning!"
@@ -1207,28 +1278,26 @@ def test_storyboard_parser_rejects_foreign_cast_slot() -> None:
         )
 
 
-def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> None:
-    """Validate structured text while rejecting text in visual-only mode."""
+def test_storyboard_parser_normalizes_text_and_allows_single_cast_panels() -> None:
+    """Normalize structured text while allowing normal manga shot variation."""
     slots = ("__NAI_CHARACTER_SLOT_1__", "__NAI_CHARACTER_SLOT_2__")
     payload = json.loads(STORYBOARD_JSON)
     payload["ok"] = True
     for panel in payload["panels"]:
         panel["characters"] = list(slots)
         panel["shot"] = "medium two-shot"
+    payload["panels"][0]["shot"] = "medium shot"
 
     storyboard = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
         json.dumps(payload, ensure_ascii=False),
         slots,
         exact_four_panels=True,
-        require_full_cast_each_panel=True,
     )
     assert storyboard["page_layout"] == (
         "vertical page; Panel 1 wide top; Panel 2 small middle-left; "
         "Panel 3 small middle-right; Panel 4 wide bottom"
     )
-    assert storyboard["reading_order"] == (
-        "Panel 1 -> Panel 2 -> Panel 3 -> Panel 4"
-    )
+    assert storyboard["reading_order"] == ("Panel 1 -> Panel 2 -> Panel 3 -> Panel 4")
 
     payload["page_layout"] = "vertical four-panel page"
     with pytest.raises(MODULE.NovelAIWebError, match="逐格说明"):
@@ -1236,13 +1305,12 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
             json.dumps(payload, ensure_ascii=False),
             slots,
             exact_four_panels=True,
-            require_full_cast_each_panel=True,
         )
     payload["page_layout"] = storyboard["page_layout"]
 
     payload["panels"][1]["text_elements"] = [
         {
-            "kind": "dialogue",
+            "kind": "speech_bubble",
             "content": "快一点！",
             "speaker": slots[0],
             "placement": "speech bubble above the first character",
@@ -1251,7 +1319,7 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
     ]
     payload["panels"][0]["text_elements"] = [
         {
-            "kind": "title",
+            "kind": "page-title",
             "content": "雪人大战",
             "speaker": "",
             "placement": "page top",
@@ -1260,7 +1328,7 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
     ]
     payload["panels"][2]["text_elements"] = [
         {
-            "kind": "sfx",
+            "kind": "sound effect",
             "content": "砰！",
             "speaker": "",
             "placement": "beside the collapsing snowman",
@@ -1269,7 +1337,7 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
     ]
     payload["panels"][3]["text_elements"] = [
         {
-            "kind": "narration",
+            "kind": "caption",
             "content": "胜负已分",
             "speaker": "",
             "placement": "lower-right corner",
@@ -1282,21 +1350,16 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
             slots,
             exact_four_panels=True,
             allow_rendered_text=False,
-            require_full_cast_each_panel=True,
         )
 
     accepted_with_text = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
         json.dumps(payload, ensure_ascii=False),
         slots,
         exact_four_panels=True,
-        require_full_cast_each_panel=True,
     )
-    assert accepted_with_text["panels"][1]["text_elements"][0]["kind"] == (
-        "dialogue"
-    )
+    assert accepted_with_text["panels"][1]["text_elements"][0]["kind"] == ("dialogue")
     assert [
-        panel["text_elements"][0]["kind"]
-        for panel in accepted_with_text["panels"]
+        panel["text_elements"][0]["kind"] for panel in accepted_with_text["panels"]
     ] == ["title", "dialogue", "sfx", "narration"]
 
     payload["panels"][1]["text_elements"][0]["content"] = (
@@ -1307,19 +1370,19 @@ def test_storyboard_parser_enforces_structured_text_and_full_cast_panels() -> No
             json.dumps(payload, ensure_ascii=False),
             slots,
             exact_four_panels=True,
-            require_full_cast_each_panel=True,
         )
     payload["panels"][1]["text_elements"][0]["content"] = "快一点！"
 
     payload["panels"][1]["text_elements"] = []
+    payload["panels"][2]["characters"] = [slots[1]]
     payload["panels"][2]["shot"] = "close-up"
-    with pytest.raises(MODULE.NovelAIWebError, match="景别不足"):
-        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
-            json.dumps(payload, ensure_ascii=False),
-            slots,
-            exact_four_panels=True,
-            require_full_cast_each_panel=True,
-        )
+    single_cast_storyboard = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+        json.dumps(payload, ensure_ascii=False),
+        slots,
+        exact_four_panels=True,
+    )
+    assert single_cast_storyboard["panels"][2]["characters"] == [slots[1]]
+    assert single_cast_storyboard["panels"][2]["shot"] == "close-up"
 
 
 @pytest.mark.asyncio
@@ -1384,9 +1447,7 @@ async def test_comic_text_is_appended_as_the_final_api_prompt_block() -> None:
     ]
 
     assert plugin._plan_prompt.await_args.kwargs["comic_text_allowed"] is True
-    assert plugin._plan_comic_storyboard.await_args.kwargs[
-        "comic_text_allowed"
-    ] is True
+    assert plugin._plan_comic_storyboard.await_args.kwargs["comic_text_allowed"] is True
     generated_call = plugin._generate_from_api.await_args
     assert "no text" not in generated_call.args[0]
     assert generated_call.args[0].startswith("text, chinese text, nsfw")
@@ -1435,9 +1496,10 @@ async def test_comic_storyboard_retries_then_returns_compact_json() -> None:
         "[TEXT_POLICY]\nALLOW_STORY_TEXT\n[/TEXT_POLICY]"
         in plugin.context.llm_generate.await_args_list[0].kwargs["prompt"]
     )
-    assert "上一次分镜无效" in plugin.context.llm_generate.await_args_list[1].kwargs[
-        "prompt"
-    ]
+    assert (
+        "上一次分镜无效"
+        in plugin.context.llm_generate.await_args_list[1].kwargs["prompt"]
+    )
     assert json.loads(storyboard)["panels"][3]["panel"] == 4
 
 
@@ -1476,7 +1538,7 @@ async def test_comic_draw_planner_retries_incomplete_panel_plan() -> None:
     complete = Mock(
         completion_text=(
             '{"ok":true,"prompt":"comic, 4koma. Panel 1 starts a picnic. '
-            'Panel 2 shows a rolling lunchbox. Panel 3 shows a chase. Panel 4 '
+            "Panel 2 shows a rolling lunchbox. Panel 3 shows a chase. Panel 4 "
             'reveals a crab.","character_prompts":{"__NAI_CHARACTER_SLOT_1__":'
             '"summer dress, Panel 1 smiling, Panel 2 surprised, Panel 3 running, '
             'Panel 4 laughing"},"error":null}'
@@ -2278,16 +2340,11 @@ def test_official_knowledge_is_model_scoped_and_traceable() -> None:
 
 def test_global_nsfw_preserves_the_terminal_text_block_verbatim() -> None:
     """Keep official Text content and blank-line separators at the absolute end."""
-    prompt = (
-        "comic, Panel 1 action, rating:general\n"
-        "Text: Hello, world!\n\n砰！"
-    )
+    prompt = "comic, Panel 1 action, rating:general\nText: Hello, world!\n\n砰！"
 
     normalized = MODULE.NovelAIWebPlugin._apply_global_nsfw_prompt(prompt)
 
-    assert normalized == (
-        "nsfw, comic, Panel 1 action\nText: Hello, world!\n\n砰！"
-    )
+    assert normalized == ("nsfw, comic, Panel 1 action\nText: Hello, world!\n\n砰！")
     assert normalized.endswith("Text: Hello, world!\n\n砰！")
 
 

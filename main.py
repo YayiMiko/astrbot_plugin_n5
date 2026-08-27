@@ -777,7 +777,6 @@ class NovelAIWebPlugin(star.Star):
         *,
         exact_four_panels: bool = False,
         allow_rendered_text: bool = True,
-        require_full_cast_each_panel: bool = False,
     ) -> ComicStoryboard:
         """Validate a structured visual storyboard returned by the planner.
 
@@ -786,7 +785,6 @@ class NovelAIWebPlugin(star.Star):
             required_character_slots: Protected cast slots available to the storyboard.
             exact_four_panels: Whether the storyboard must contain exactly four panels.
             allow_rendered_text: Whether the user permits rendered story text.
-            require_full_cast_each_panel: Whether every panel must show the full cast.
 
         Returns:
             Validated page layout, continuity, and sequential panel descriptions.
@@ -878,20 +876,6 @@ class NovelAIWebPlugin(star.Star):
             used_slots.update(
                 value for value in normalized_characters if value in allowed_slots
             )
-            if (
-                require_full_cast_each_panel
-                and set(normalized_characters) != allowed_slots
-            ):
-                raise NovelAIWebError(
-                    f"漫画分镜 Panel {expected_number} 没有让全部参赛角色共同入镜。"
-                )
-            if len(normalized_characters) > 1 and not re.search(
-                r"(?i)\b(?:two-shot|group shot|wide shot|ensemble shot)\b",
-                str(panel["shot"]),
-            ):
-                raise NovelAIWebError(
-                    f"漫画分镜 Panel {expected_number} 的景别不足以容纳多人。"
-                )
             panel["characters"] = normalized_characters
 
             raw_text_elements = raw_panel.get("text_elements", [])
@@ -913,6 +897,24 @@ class NovelAIWebPlugin(star.Star):
                             f"漫画分镜 Panel {expected_number} 的文字元素缺少 {field}。"
                         )
                     element[field] = re.sub(r"\s+", " ", value).strip()
+                normalized_kind = re.sub(
+                    r"[\s-]+",
+                    "_",
+                    element["kind"].casefold(),
+                )
+                element["kind"] = {
+                    "dialog": "dialogue",
+                    "speech": "dialogue",
+                    "speech_balloon": "dialogue",
+                    "speech_bubble": "dialogue",
+                    "caption": "narration",
+                    "narrative": "narration",
+                    "narrator": "narration",
+                    "sound_effect": "sfx",
+                    "onomatopoeia": "sfx",
+                    "page_title": "title",
+                    "header": "title",
+                }.get(normalized_kind, normalized_kind)
                 if element["kind"] not in {"dialogue", "title", "narration", "sfx"}:
                     raise NovelAIWebError("漫画分镜使用了未知的文字元素类型。")
                 if not all(
@@ -1057,9 +1059,6 @@ class NovelAIWebPlugin(star.Star):
                     required_character_slots,
                     exact_four_panels=comic_draw_mode,
                     allow_rendered_text=comic_text_allowed,
-                    require_full_cast_each_panel=(
-                        comic_draw_mode and 1 < len(required_character_slots) <= 4
-                    ),
                 )
                 return json.dumps(
                     storyboard,
@@ -2332,9 +2331,8 @@ class NovelAIWebPlugin(star.Star):
         edits: list[tuple[int, int, str]] = []
         for name, content, spans in matched_characters:
             slot = f"__NAI_CHARACTER_SLOT_{len(replacements) + 1}__"
-            for occurrence_index, (start, end) in enumerate(sorted(spans)):
-                replacement = slot if occurrence_index == 0 else "the same character"
-                edits.append((start, end, replacement))
+            for start, end in sorted(spans):
+                edits.append((start, end, slot))
             replacements.append(
                 (
                     slot,
@@ -2465,14 +2463,8 @@ class NovelAIWebPlugin(star.Star):
             matches = list(name_pattern.finditer(description))
             if matches:
                 edits: list[tuple[int, int, str]] = []
-                for index, match in enumerate(matches):
-                    edits.append(
-                        (
-                            match.start(),
-                            match.end(),
-                            slot if index == 0 else "the same character",
-                        )
-                    )
+                for match in matches:
+                    edits.append((match.start(), match.end(), slot))
                 for start, end, replacement in reversed(edits):
                     description = description[:start] + replacement + description[end:]
             elif image_context.image_urls:
@@ -4087,6 +4079,40 @@ class NovelAIWebPlugin(star.Star):
                     image_context,
                     image_model,
                 )
+                if (
+                    comic_draw_mode
+                    and len(character_replacements) == 1
+                    and re.search(
+                        rf"(?:{CHARACTER_SLOT_PATTERN.pattern})\s*"
+                        r"(?:和|与|及|、|&|\band\b)|"
+                        r"(?:和|与|及|、|&|\band\b)\s*"
+                        rf"(?:{CHARACTER_SLOT_PATTERN.pattern})",
+                        prompt_text,
+                        re.IGNORECASE,
+                    )
+                ):
+                    (
+                        prompt_text,
+                        character_replacements,
+                        retry_unresolved_identities,
+                        retry_reference_context,
+                    ) = await self._resolve_planned_character_slots(
+                        event,
+                        prompt_text,
+                        character_replacements,
+                        image_context,
+                        image_model,
+                    )
+                    unresolved_identities.extend(retry_unresolved_identities)
+                    if retry_reference_context:
+                        creative_reference_context = "\n\n".join(
+                            value
+                            for value in (
+                                creative_reference_context,
+                                retry_reference_context,
+                            )
+                            if value
+                        )
                 if comic_draw_mode:
                     explicit_plot = re.search(
                         r"(?:剧情|情节)\s*[:：]\s*(.+)$",
@@ -4104,7 +4130,6 @@ class NovelAIWebPlugin(star.Star):
                     if not plot_candidates and character_replacements:
                         plot_candidates = [prompt_text]
                     for candidate in plot_candidates:
-                        candidate = CHARACTER_SLOT_PATTERN.sub(" ", candidate)
                         candidate = re.sub(
                             r"(?i)\bthe same character\b",
                             " ",
@@ -4113,7 +4138,11 @@ class NovelAIWebPlugin(star.Star):
                         candidate = re.sub(r"\s+", " ", candidate).strip(
                             " 和与及同、,，;；:：/&+"
                         )
-                        if candidate:
+                        event_text = CHARACTER_SLOT_PATTERN.sub(" ", candidate)
+                        event_text = re.sub(r"\s+", " ", event_text).strip(
+                            " 和与及同、,，;；:：/&+"
+                        )
+                        if candidate and event_text:
                             comic_draw_plot_seed = candidate
                             break
                 if creative_reference_context:

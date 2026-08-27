@@ -4,8 +4,8 @@
 {"ok":true,"page_layout":"页面方向、格数与格子大小关系","reading_order":"明确阅读顺序","visual_continuity":"跨格必须保持的地点、服装、道具、光线和空间关系","panels":[{"panel":1,"beat":"本格叙事功能","shot":"景别","camera":"机位与视角","composition":"人物站位、前后层次、视觉焦点","characters":["合法人物槽位"],"action":"可被直接画出的动作","state_change":"相比上一格或本格开始时发生的可见变化","text_elements":[{"kind":"dialogue|title|narration|sfx","content":"需要画出的准确原文","speaker":"对白使用合法人物槽位，其它类型为空字符串","placement":"文字在本格或页面中的位置","style":"气泡、字形、颜色和背景等可见样式"}]}]}
 2. `panel` 必须从 1 连续编号。`COMIC_DRAW_EXACT_4` 必须恰好四格，并采用“建立 → 发展或升级 → 转折 → 明确结果”的四拍因果结构；`COMIC_1_TO_4` 根据用户明确要求和剧情容量选择 1 至 4 格。格数不等于固定版式：根据剧情节奏自由选择 2×2 网格、宽主格配小格、上下主格、左右分栏或清楚的不对称漫画布局。
 3. page_layout 必须使用简洁英文逐一写出每格在页面上的位置和相对尺寸，并逐字包含连续的 `Panel 1` 至最后一格，例如 `vertical page; Panel 1 wide top; Panel 2 small middle-left; Panel 3 small middle-right; Panel 4 wide bottom`。reading_order 必须逐字写成 `Panel 1 -> Panel 2 -> ...`。不得用“横向四格、从上到下”等互相矛盾的方向，也不得只写 `four-panel page` 而省略格子几何关系。示例只是协议示范，不是默认版式；应根据本次转折和高潮重新选择几何关系，避免连续请求总是复用同一布局。
-4. 每格都必须填写 beat、shot、camera、composition、characters、action、state_change 和 text_elements。shot 使用简短英文镜头类型；多人共同入镜时使用 `wide shot`、`medium two-shot`、`group shot` 或 `ensemble shot`，不得用无法容纳全部人物的单人 close-up。动作、表情、视线、物件位置或环境结果至少有一项在相邻格发生可见变化，禁止同姿势差分。
-5. characters 只能使用 `[CAST_SLOTS]` 中的槽位；必须让所有给定槽位至少出场一次。漫画抽卡有 2 至 4 名角色时，每格都让全部角色共同入镜，并在 composition 中维持清楚稳定的左右或前后位置，让互动和反应同时可见。没有槽位时可使用简短的描述性称呼，但不得新增具名角色。
+4. 每格都必须填写 beat、shot、camera、composition、characters、action、state_change 和 text_elements。shot 使用简短英文镜头类型，并与本格实际可见人物相符；允许单人特写、正反打、主观镜头、场外角色和多人共同入镜。动作、表情、视线、物件位置或环境结果至少有一项在相邻格发生可见变化，禁止同姿势差分。
+5. characters 只能使用 `[CAST_SLOTS]` 中的槽位，并且只列出本格画面中真正可见的人物；必须让所有给定槽位在整页中至少出场一次，但不要求每格全员共同入镜。多人同格时在 composition 中维持清楚稳定的左右或前后位置；单人格应服务于反应、动作或情绪推进。没有槽位时可使用简短的描述性称呼，但不得新增具名角色。
 6. `[PLOT_SEED]` 不是 `AI_INVENT_STORY` 时，它是不可替换的核心事件，必须贯穿因果链，只能扩写。为 `AI_INVENT_STORY` 时主动设计适合全部角色、能通过画面读懂的微型剧情。
 7. 每格使用有区别且合理的景别与机位，让读者清楚看到建立空间、动作推进、反应和结果；多人剧情允许用广角、双人中景、前景反应加背景动作等变化，但不能为了镜头变化把另一名核心角色裁出画面。构图需写明角色左右、前后、朝向、共同物件和视觉焦点。把视觉高潮、转折或结果安排到较大格，把连接动作安排到较小格，让版式服务剧情而不是随机变化。
 8. 维持角色身份、服装、核心外观和关键道具连续；只有剧情明确展示变化时才允许改变状态，并在 state_change 说明。
