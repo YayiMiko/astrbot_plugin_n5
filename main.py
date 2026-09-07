@@ -135,6 +135,13 @@ PROMPT_KNOWLEDGE_DIR = (
     / "novelai-n5-prompt-planner"
     / "knowledge"
 )
+COMIC_PLANNER_SYSTEM_PROMPT_PATH = (
+    Path(__file__).resolve().parent
+    / "skills"
+    / "novelai-n5-prompt-planner"
+    / "references"
+    / "comic-mode.txt"
+)
 OFFICIAL_RULES_PATH = PROMPT_KNOWLEDGE_DIR / "official-rules.json"
 OFFICIAL_SOURCE_MANIFEST_PATH = PROMPT_KNOWLEDGE_DIR / "source-manifest.json"
 LOCAL_PREFERENCES_PATH = PROMPT_KNOWLEDGE_DIR / "local-preferences.json"
@@ -147,6 +154,12 @@ REQUEST_SIZE_KEYWORDS = {
     "超宽屏": (1536, 640),
     "电影超宽屏": (1536, 640),
 }
+# NovelAI API ucPreset integers: Heavy=0, Light=1, FurryFocus=2, HumanFocus=3,
+# None=4. Comic pages always use the Heavy preset per the comic skill.
+COMIC_UC_PRESET_HEAVY = 0
+COMIC_MAX_PANELS = 4
+COMIC_SCALE = 7.0
+COMIC_SLOT_CENTER_XS = (0.1, 0.3, 0.5, 0.7, 0.9)
 
 
 class ArtistLibraryState(TypedDict):
@@ -194,6 +207,34 @@ class PromptPlan(TypedDict):
 
     prompt: str
     character_prompts: dict[str, str]
+
+
+class ComicPanelCharacter(TypedDict):
+    """Hold one validated comic panel character slot assignment."""
+
+    slot: str
+    identity: str
+    state: str
+    dialogue: str
+
+
+class ComicPanel(TypedDict):
+    """Hold one validated comic storyboard panel."""
+
+    panel: int
+    placement: str
+    shot: str
+    camera: str
+    scene: str
+    characters: list[ComicPanelCharacter]
+    narration: str
+
+
+class ComicStoryboard(TypedDict):
+    """Hold one validated multi-panel comic storyboard."""
+
+    reading_order: str
+    panels: list[ComicPanel]
 
 
 class PendingCharacterChange(TypedDict):
@@ -256,7 +297,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.3.0",
+    "0.4.0",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -385,7 +426,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.3.0",
+                    "User-Agent": "AstrBot-N5/0.4.0",
                 },
                 follow_redirects=False,
             )
@@ -463,6 +504,7 @@ class NovelAIWebPlugin(star.Star):
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
                 "  尾缀 横图/方图/超宽屏 指定本次尺寸，默认 832x1216 竖图",
+                "/n5 漫画 <剧情> - 规划并生成多格漫画页（最多 4 格）",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 角色 [名称] - 列出或查看自己的角色",
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
@@ -887,6 +929,286 @@ class NovelAIWebPlugin(star.Star):
                     )
 
         raise last_error or NovelAIWebError("Prompt 规划失败。")
+
+    @staticmethod
+    def _parse_comic_storyboard_response(
+        raw_response: str,
+        required_character_slots: tuple[str, ...] = (),
+    ) -> ComicStoryboard:
+        """Validate a comic storyboard returned by the planner.
+
+        Args:
+            raw_response: Raw model completion expected to contain one JSON object.
+            required_character_slots: Protected cast slots available to the story.
+
+        Returns:
+            Validated reading order and sequential panel descriptions.
+
+        Raises:
+            NovelAIWebError: If the response violates the storyboard protocol.
+        """
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            raw_response.strip(),
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            raw_response = fenced.group(1)
+        try:
+            payload = json.loads(raw_response)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise NovelAIWebError("漫画分镜模型没有返回有效 JSON。") from exc
+        if not isinstance(payload, dict) or payload.get("ok") is not True:
+            if isinstance(payload, dict) and payload.get("error") == "too_many_panels":
+                raise NovelAIWebError(
+                    "漫画分镜超过单页上限，请把剧情拆成多页分次生成。"
+                )
+            raise NovelAIWebError("漫画分镜模型返回了无效协议。")
+        reading_order = str(payload.get("reading_order", "")).strip()
+        if reading_order not in {"right-to-left", "left-to-right"}:
+            raise NovelAIWebError("漫画分镜阅读顺序无效。")
+        raw_panels = payload.get("panels")
+        if not isinstance(raw_panels, list) or not 1 <= len(raw_panels) <= (
+            COMIC_MAX_PANELS
+        ):
+            raise NovelAIWebError(f"漫画分镜必须包含 1 到 {COMIC_MAX_PANELS} 格。")
+        allowed_slots = set(required_character_slots)
+        panels: list[ComicPanel] = []
+        for index, raw_panel in enumerate(raw_panels, start=1):
+            if not isinstance(raw_panel, dict):
+                raise NovelAIWebError(f"漫画第 {index} 格格式无效。")
+            if int(raw_panel.get("panel", index)) != index:
+                raise NovelAIWebError("漫画分镜必须从第 1 格连续编号。")
+            placement = str(raw_panel.get("placement", "")).strip()
+            if not placement:
+                raise NovelAIWebError(f"漫画第 {index} 格缺少位置描述。")
+            raw_characters = raw_panel.get("characters", [])
+            if not isinstance(raw_characters, list):
+                raise NovelAIWebError(f"漫画第 {index} 格角色格式无效。")
+            characters: list[ComicPanelCharacter] = []
+            for raw_character in raw_characters:
+                if not isinstance(raw_character, dict):
+                    raise NovelAIWebError(f"漫画第 {index} 格角色格式无效。")
+                slot = str(raw_character.get("slot", "")).strip()
+                if slot and slot not in allowed_slots:
+                    raise NovelAIWebError(f"漫画第 {index} 格引用了未知人物槽位。")
+                identity = str(raw_character.get("identity", "")).strip()
+                if not identity or len(identity) > 200:
+                    raise NovelAIWebError(f"漫画第 {index} 格人物身份无效。")
+                if CHARACTER_SLOT_PATTERN.search(identity):
+                    raise NovelAIWebError(f"漫画第 {index} 格人物身份包含保留占位符。")
+                state = str(raw_character.get("state", "")).strip()
+                dialogue = str(raw_character.get("dialogue", "")).strip()
+                if len(dialogue) > 80:
+                    raise NovelAIWebError(f"漫画第 {index} 格台词过长，请压缩。")
+                characters.append(
+                    {
+                        "slot": slot,
+                        "identity": identity,
+                        "state": state,
+                        "dialogue": dialogue,
+                    }
+                )
+            narration = str(raw_panel.get("narration", "")).strip()
+            if len(narration) > 80:
+                raise NovelAIWebError(f"漫画第 {index} 格旁白过长，请压缩。")
+            panels.append(
+                {
+                    "panel": index,
+                    "placement": placement,
+                    "shot": str(raw_panel.get("shot", "")).strip(),
+                    "camera": str(raw_panel.get("camera", "")).strip(),
+                    "scene": str(raw_panel.get("scene", "")).strip(),
+                    "characters": characters,
+                    "narration": narration,
+                }
+            )
+        return {"reading_order": reading_order, "panels": panels}
+
+    async def _plan_comic_storyboard(
+        self,
+        description: str,
+        required_character_slots: tuple[str, ...] = (),
+        image_urls: tuple[str, ...] = (),
+        metadata_prompt: str = "",
+    ) -> ComicStoryboard:
+        """Design a validated storyboard before writing the NovelAI prompt.
+
+        Args:
+            description: User-provided comic plot with protected cast slots.
+            required_character_slots: Protected character keys available to the story.
+            image_urls: Request-local images used as storyboard reference.
+            metadata_prompt: Trusted NovelAI metadata recovered from request images.
+
+        Returns:
+            Validated reading order and sequential panel descriptions.
+
+        Raises:
+            NovelAIWebError: If planning fails or remains invalid after retry.
+        """
+        provider_id = str(
+            self.config.get(
+                "prompt_planner_provider_id",
+                DEFAULT_PROMPT_PLANNER_PROVIDER_ID,
+            )
+        ).strip()
+        if not provider_id:
+            raise NovelAIWebError("prompt_planner_provider_id 不能为空。")
+        try:
+            system_prompt = COMIC_PLANNER_SYSTEM_PROMPT_PATH.read_text(
+                encoding="utf-8"
+            ).strip()
+        except OSError as exc:
+            raise NovelAIWebError("漫画分镜规划规则无法读取。") from exc
+        if not system_prompt:
+            raise NovelAIWebError("漫画分镜规划规则为空。")
+        if required_character_slots:
+            allowed_slots = ", ".join(f"`{slot}`" for slot in required_character_slots)
+            slot_contract = (
+                "本次可用的合法人物槽位恰好为："
+                f"{allowed_slots}。`characters[].slot` 只能取其中之一或空字符串；"
+                "不得自创槽位。"
+            )
+        else:
+            slot_contract = (
+                "本次用户消息不含插件提供的人物槽位。所有 `characters[].slot` "
+                "必须为空字符串，用 `identity` 直接写人物。"
+            )
+        system_prompt += "\n\n" + slot_contract
+        retry_prompt = description
+        if metadata_prompt:
+            retry_prompt += (
+                "\n\n以下为引用图中的 NovelAI PNG Prompt 元数据，可作分镜参考：\n"
+                + metadata_prompt
+            )
+        last_error: NovelAIWebError | None = None
+        for attempt in range(3):
+            try:
+                response = await self.context.llm_generate(
+                    chat_provider_id=provider_id,
+                    prompt=retry_prompt,
+                    image_urls=list(image_urls),
+                    system_prompt=system_prompt,
+                    request_max_retries=2,
+                    temperature=0.7,
+                )
+            except Exception as exc:
+                raise NovelAIWebError("漫画分镜规划失败，请稍后再试。") from exc
+            try:
+                return self._parse_comic_storyboard_response(
+                    str(response.completion_text or "").strip(),
+                    required_character_slots,
+                )
+            except NovelAIWebError as exc:
+                last_error = exc
+                if attempt < 2:
+                    retry_prompt = (
+                        f"上一次分镜无效：{exc} 请严格修正协议并重新设计。\n"
+                        + retry_prompt
+                    )
+        raise last_error or NovelAIWebError("漫画分镜规划失败。")
+
+    @staticmethod
+    def _comic_slot_centers(total: int) -> list[float]:
+        """Spread comic slot coordinates across the page width.
+
+        Args:
+            total: Number of character slots on the page.
+
+        Returns:
+            One x coordinate per slot, following the skill's stagger table.
+        """
+        if total <= len(COMIC_SLOT_CENTER_XS):
+            return list(COMIC_SLOT_CENTER_XS[:total])
+        return [round((index + 1) / (total + 1), 2) for index in range(total)]
+
+    def _build_comic_prompts(
+        self,
+        storyboard: ComicStoryboard,
+        replacements: list[tuple[str, str, str, str]],
+    ) -> tuple[str, list[str], str]:
+        """Translate a validated storyboard into NovelAI prompts.
+
+        Character slots keep only ``identity, subject`` plus per-panel state,
+        following the comic skill; saved fixed appearances are not injected.
+
+        Args:
+            storyboard: Validated reading order and panels.
+            replacements: Slot, character name, and saved prompt tuples used only
+                to derive a fallback subject word.
+
+        Returns:
+            Base prompt, per-slot captions in panel order, and a readable
+            storyboard summary for chat delivery.
+        """
+        saved_subject: dict[str, str] = {}
+        for slot, _, saved_prompt, _ in replacements:
+            if re.search(
+                r"(?i)(?<![a-z0-9_])(?:girl|1girl|woman|female|loli)(?![a-z0-9_])",
+                saved_prompt,
+            ):
+                saved_subject[slot] = "girl"
+            elif re.search(
+                r"(?i)(?<![a-z0-9_])(?:boy|1boy|man|male|shota)(?![a-z0-9_])",
+                saved_prompt,
+            ):
+                saved_subject[slot] = "boy"
+            else:
+                saved_subject[slot] = "other"
+
+        base_parts = [
+            (
+                f"{len(storyboard['panels'])}-panel manga page, "
+                "asymmetric comic layout, "
+                f"{storyboard['reading_order']}, "
+                "masterpiece, best quality"
+            )
+        ]
+        for panel in storyboard["panels"]:
+            panel_text = f"Panel {panel['panel']} ({panel['placement']})"
+            lens = ", ".join(part for part in (panel["shot"], panel["camera"]) if part)
+            if lens:
+                panel_text += f": {lens}"
+            if panel["scene"]:
+                panel_text += f". {panel['scene']}"
+            base_parts.append(panel_text)
+        base_parts.append("clean panel borders, white gutter")
+        base_prompt = ", ".join(base_parts)
+
+        slot_captions: list[str] = []
+        summary_lines = [
+            f"漫画分镜（{len(storyboard['panels'])} 格，"
+            f"{'从右向左' if storyboard['reading_order'] == 'right-to-left' else '从左到右'}）："
+        ]
+        for panel in storyboard["panels"]:
+            if panel["narration"]:
+                narration = panel["narration"].replace('"', "“")
+                slot_captions.append(
+                    f'speech bubble, rectangular narration box, text"{narration}"'
+                )
+            panel_cast: list[str] = []
+            for character in panel["characters"]:
+                identity = character["identity"]
+                if not re.search(
+                    r"(?i)(?<![a-z0-9_])(?:girl|boy|other)(?![a-z0-9_])",
+                    identity,
+                ):
+                    identity += f", {saved_subject.get(character['slot'], 'other')}"
+                caption = identity
+                if character["state"]:
+                    caption += f", {character['state']}"
+                if character["dialogue"]:
+                    dialogue = character["dialogue"].replace('"', "“")
+                    caption += f', speech bubble, text"{dialogue}"'
+                slot_captions.append(caption)
+                panel_cast.append(identity)
+            summary = f"第 {panel['panel']} 格（{panel['placement']}）"
+            if panel_cast:
+                summary += "：" + "、".join(panel_cast)
+            if panel["narration"]:
+                summary += f"【旁白：{panel['narration']}】"
+            summary_lines.append(summary)
+        return base_prompt, slot_captions, "\n".join(summary_lines)
 
     def _load_artist_state(self) -> ArtistState:
         """Load shared libraries and per-QQ selections with legacy migration."""
@@ -3077,16 +3399,18 @@ class NovelAIWebPlugin(star.Star):
             yield event.plain_result(character_text)
             return
 
-        if subcommand not in {"生成", "原始"}:
+        if subcommand not in {"生成", "原始", "漫画"}:
             yield event.plain_result(
                 "请输入生图描述。\n"
                 "示例：/n5 生成 雪夜车站里的银发少女\n"
                 "其他模式：\n"
+                "/n5 漫画 <剧情>：规划并生成多格漫画页\n"
                 "/n5 原始 <Prompt>：跳过提示词优化\n"
                 "发送 /n5 查看完整帮助。"
             )
             return
         prompt_text = arguments
+        comic_mode = subcommand == "漫画"
         generation_size = DEFAULT_GENERATION_SIZE
         size_match = re.search(r"(竖图|横图|方图|电影超宽屏|超宽屏)\s*$", prompt_text)
         if size_match:
@@ -3094,8 +3418,10 @@ class NovelAIWebPlugin(star.Star):
             prompt_text = prompt_text[: size_match.start()].rstrip(" ,，;；")
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
-        if not is_direct_prompt and not NATURAL_LANGUAGE_SCRIPT_PATTERN.search(
-            prompt_text
+        if (
+            not comic_mode
+            and not is_direct_prompt
+            and not (NATURAL_LANGUAGE_SCRIPT_PATTERN.search(prompt_text))
         ):
             is_direct_prompt = bool(NOVELAI_PROMPT_SIGNAL_PATTERN.search(prompt_text))
             if not is_direct_prompt and len(prompt_parts) >= 2:
@@ -3135,7 +3461,7 @@ class NovelAIWebPlugin(star.Star):
             explicit_nudity = bool(EXPLICIT_NUDITY_SOURCE_PATTERN.search(prompt_text))
             unresolved_identities: list[str] = []
             creative_reference_context = ""
-            if not is_direct_prompt:
+            if not is_direct_prompt and not comic_mode:
                 (
                     prompt_text,
                     character_replacements,
@@ -3165,10 +3491,30 @@ class NovelAIWebPlugin(star.Star):
             return
 
         await self._join_generation_queue()
+        storyboard_summary = ""
         try:
             try:
                 async with self._generation_semaphore:
-                    if not is_direct_prompt:
+                    if comic_mode:
+                        storyboard = await self._plan_comic_storyboard(
+                            prompt_text,
+                            tuple(slot for slot, _, _, _ in character_replacements),
+                            image_context.image_urls,
+                            image_context.metadata_prompt,
+                        )
+                        prompt_text, comic_captions, storyboard_summary = (
+                            self._build_comic_prompts(
+                                storyboard,
+                                character_replacements,
+                            )
+                        )
+                        character_prompts = tuple(comic_captions)
+                        slot_centers: tuple[float, ...] | None = tuple(
+                            self._comic_slot_centers(len(comic_captions))
+                        )
+                        character_negative_prompts = ()
+                    elif not is_direct_prompt:
+                        slot_centers = None
                         plan = await self._plan_prompt(
                             prompt_text,
                             planner_max_length,
@@ -3177,6 +3523,7 @@ class NovelAIWebPlugin(star.Star):
                             image_context.metadata_prompt,
                         )
                     else:
+                        slot_centers = None
                         base_prompt = CHARACTER_SLOT_PATTERN.sub("", prompt_text)
                         base_prompt = re.sub(
                             r"\s*,\s*,+",
@@ -3189,23 +3536,24 @@ class NovelAIWebPlugin(star.Star):
                                 slot: "" for slot, _, _, _ in character_replacements
                             },
                         }
-                    prompt_text = plan["prompt"]
-                    character_prompts = self._build_character_prompts(
-                        character_replacements,
-                        plan["character_prompts"],
-                        max_prompt_length,
-                        explicit_nudity,
-                    )
-                    character_negative_prompts = tuple(
-                        character_negative_prompt
-                        for _, _, _, character_negative_prompt in (
-                            character_replacements
+                    if not comic_mode:
+                        prompt_text = plan["prompt"]
+                        character_prompts = self._build_character_prompts(
+                            character_replacements,
+                            plan["character_prompts"],
+                            max_prompt_length,
+                            explicit_nudity,
                         )
-                    )
-                    prompt_text = self._apply_character_subject_counts(
-                        prompt_text,
-                        character_prompts,
-                    )
+                        character_negative_prompts = tuple(
+                            character_negative_prompt
+                            for _, _, _, character_negative_prompt in (
+                                character_replacements
+                            )
+                        )
+                        prompt_text = self._apply_character_subject_counts(
+                            prompt_text,
+                            character_prompts,
+                        )
                     if len(character_prompts) == 1:
                         duplicate_guards = (
                             "multiple girls",
@@ -3243,6 +3591,12 @@ class NovelAIWebPlugin(star.Star):
                         negative_prompt,
                         character_negative_prompts,
                         image_model=image_model,
+                        scale=COMIC_SCALE if comic_mode else 5,
+                        uc_preset_override=(
+                            COMIC_UC_PRESET_HEAVY if comic_mode else None
+                        ),
+                        use_coords=comic_mode,
+                        slot_centers=slot_centers,
                     )
             except NovelAIWebError as exc:
                 yield event.plain_result(f"生成失败：{exc}")
@@ -3261,6 +3615,8 @@ class NovelAIWebPlugin(star.Star):
                 + "、".join(unresolved_identities)
                 + "。本次已保留 DS4F 给出的候选与外观描述。"
             )
+        if comic_mode and storyboard_summary:
+            yield event.plain_result(storyboard_summary)
         await self._deliver_generated_image(event, output_path)
 
     async def _generate_from_api(
@@ -3272,6 +3628,10 @@ class NovelAIWebPlugin(star.Star):
         character_negative_prompts: tuple[str, ...] = (),
         *,
         image_model: str = NOVELAI_MODEL,
+        scale: float = 5,
+        uc_preset_override: int | None = None,
+        use_coords: bool = False,
+        slot_centers: tuple[float, ...] | None = None,
     ) -> Path:
         """Submit one guarded free-generation request to the NovelAI API.
 
@@ -3282,6 +3642,10 @@ class NovelAIWebPlugin(star.Star):
             negative_prompt: Base NovelAI Undesired Content prompt.
             character_negative_prompts: Per-character V5 negative captions.
             image_model: Canonical NovelAI V5 Curated or Full identifier.
+            scale: Prompt guidance strength (comic pages use a higher value).
+            uc_preset_override: Fixed UC preset integer, or ``None`` to use config.
+            use_coords: Whether character slots lock to regional coordinates.
+            slot_centers: Per-slot x coordinates, or ``None`` for centered slots.
 
         Returns:
             Path to the verified generated image.
@@ -3306,6 +3670,8 @@ class NovelAIWebPlugin(star.Star):
             uc_preset = int(self.config.get("uc_preset", 3))
         except (TypeError, ValueError) as exc:
             raise NovelAIWebError("NovelAI API 数值配置必须是整数。") from exc
+        if uc_preset_override is not None:
+            uc_preset = uc_preset_override
         if width * height > max_total_pixels:
             raise NovelAIWebError(
                 f"已拒绝请求：{width}x{height} 超过免费像素上限 {max_total_pixels}。"
@@ -3345,12 +3711,19 @@ class NovelAIWebPlugin(star.Star):
         ):
             raise NovelAIWebError("正面与负面 Prompt 总长度超过安全上限。")
         seed = secrets.randbelow(2**32)
+        if slot_centers is not None and len(slot_centers) != len(character_prompts):
+            raise NovelAIWebError("漫画槽位坐标数量与人物数量不一致。")
         positive_character_captions = [
             {
                 "char_caption": character_prompt,
-                "centers": [{"x": 0.5, "y": 0.5}],
+                "centers": [
+                    {
+                        "x": (slot_centers[index] if slot_centers is not None else 0.5),
+                        "y": 0.5,
+                    }
+                ],
             }
-            for character_prompt in character_prompts
+            for index, character_prompt in enumerate(character_prompts)
         ]
         negative_character_captions = [
             {
@@ -3367,7 +3740,7 @@ class NovelAIWebPlugin(star.Star):
                 "params_version": NOVELAI_PARAMS_VERSION,
                 "width": width,
                 "height": height,
-                "scale": 5,
+                "scale": scale,
                 "sampler": "k_euler_ancestral",
                 "steps": steps,
                 "n_samples": 1,
@@ -3395,7 +3768,7 @@ class NovelAIWebPlugin(star.Star):
                         "base_caption": prompt,
                         "char_captions": positive_character_captions,
                     },
-                    "use_coords": False,
+                    "use_coords": use_coords,
                     "use_order": True,
                 },
                 "v4_negative_prompt": {

@@ -261,6 +261,10 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -286,6 +290,10 @@ async def test_natural_language_still_uses_planner() -> None:
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -339,6 +347,10 @@ async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None
         "multiple girls, multiple boys, multiple views, character sheet, lineup, duplicate",
         ("",),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -380,6 +392,10 @@ async def test_explicit_raw_character_tag_still_skips_planning() -> None:
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -984,6 +1000,10 @@ async def test_character_generation_uses_native_captions() -> None:
         "",
         ("extra fingers", "bad eyes"),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -1027,6 +1047,10 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
         "multiple girls, multiple boys, multiple views, character sheet, lineup, duplicate",
         ("",),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -1577,6 +1601,10 @@ async def test_generation_size_keyword_landscape() -> None:
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -1599,6 +1627,10 @@ async def test_generation_size_keyword_square() -> None:
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
 
@@ -1623,5 +1655,225 @@ async def test_generation_size_keyword_ultrawide() -> None:
         "",
         (),
         image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
     )
     assert results == []
+
+
+COMIC_STORYBOARD_DICT = {
+    "reading_order": "right-to-left",
+    "panels": [
+        {
+            "panel": 1,
+            "placement": "右侧竖长主格",
+            "shot": "medium shot",
+            "camera": "eye level",
+            "scene": "neon street at night",
+            "characters": [
+                {
+                    "slot": "",
+                    "identity": "girl, silver hair",
+                    "state": "holding umbrella, surprised",
+                    "dialogue": "雨下大了",
+                }
+            ],
+            "narration": "",
+        },
+        {
+            "panel": 2,
+            "placement": "左侧小格",
+            "shot": "close-up",
+            "camera": "low angle",
+            "scene": "",
+            "characters": [
+                {
+                    "slot": "",
+                    "identity": "girl, black hair",
+                    "state": "smiling",
+                    "dialogue": "",
+                }
+            ],
+            "narration": "第二天",
+        },
+    ],
+}
+
+
+def test_comic_storyboard_parser_accepts_valid_panels() -> None:
+    """Accept a two-panel storyboard with dialogue and narration."""
+    import json as json_module
+
+    raw = json_module.dumps(
+        {"ok": True, **COMIC_STORYBOARD_DICT, "error": None},
+        ensure_ascii=False,
+    )
+
+    storyboard = MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(raw, ())
+
+    assert storyboard["reading_order"] == "right-to-left"
+    assert [panel["panel"] for panel in storyboard["panels"]] == [1, 2]
+    assert storyboard["panels"][1]["narration"] == "第二天"
+
+
+def test_comic_storyboard_parser_rejects_unknown_slot() -> None:
+    """Reject panel characters that reference slots outside the cast."""
+    import copy as copy_module
+    import json as json_module
+
+    payload = copy_module.deepcopy(COMIC_STORYBOARD_DICT)
+    payload["panels"][0]["characters"][0]["slot"] = "__NAI_CHARACTER_SLOT_9__"
+    raw = json_module.dumps({"ok": True, **payload, "error": None}, ensure_ascii=False)
+
+    with pytest.raises(MODULE.NovelAIWebError, match="未知人物槽位"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(
+            raw, ("__NAI_CHARACTER_SLOT_1__",)
+        )
+
+
+def test_comic_storyboard_parser_rejects_too_many_panels() -> None:
+    """Reject storyboards larger than a single page."""
+    import copy as copy_module
+    import json as json_module
+
+    payload = copy_module.deepcopy(COMIC_STORYBOARD_DICT)
+    for number in range(3, 6):
+        extra = copy_module.deepcopy(payload["panels"][0])
+        extra["panel"] = number
+        payload["panels"].append(extra)
+    raw = json_module.dumps({"ok": True, **payload, "error": None}, ensure_ascii=False)
+
+    with pytest.raises(MODULE.NovelAIWebError, match="1 到 4"):
+        MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(raw, ())
+
+
+def test_comic_build_skips_saved_appearance() -> None:
+    """Keep only identity plus panel state, never saved fixed appearance."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "芙宁娜",
+            "furina (genshin impact), blue eyes, long hair, blue dress",
+            "",
+        )
+    ]
+    storyboard = {
+        "reading_order": "right-to-left",
+        "panels": [
+            {
+                "panel": 1,
+                "placement": "整页单格",
+                "shot": "",
+                "camera": "",
+                "scene": "",
+                "characters": [
+                    {
+                        "slot": "__NAI_CHARACTER_SLOT_1__",
+                        "identity": "furina (genshin impact), girl",
+                        "state": "holding umbrella",
+                        "dialogue": "",
+                    }
+                ],
+                "narration": "",
+            }
+        ],
+    }
+
+    base, captions, summary = plugin._build_comic_prompts(storyboard, replacements)
+
+    assert "1-panel manga page" in base
+    assert captions == ["furina (genshin impact), girl, holding umbrella"]
+    assert "blue eyes" not in captions[0]
+    assert "long hair" not in captions[0]
+    assert "第 1 格" in summary
+
+
+def test_comic_slot_centers_follow_stagger_table() -> None:
+    """Stagger slot coordinates per the comic skill table."""
+    assert MODULE.NovelAIWebPlugin._comic_slot_centers(1) == [0.1]
+    assert MODULE.NovelAIWebPlugin._comic_slot_centers(3) == [0.1, 0.3, 0.5]
+    assert MODULE.NovelAIWebPlugin._comic_slot_centers(5) == [0.1, 0.3, 0.5, 0.7, 0.9]
+    spread = MODULE.NovelAIWebPlugin._comic_slot_centers(6)
+    assert spread == sorted(spread) and spread[0] > 0 and spread[-1] < 1
+
+
+@pytest.mark.asyncio
+async def test_comic_command_uses_comic_payload() -> None:
+    """Plan a storyboard and generate with comic API parameters."""
+    import copy as copy_module
+
+    plugin = build_plugin()
+    plugin._plan_comic_storyboard = AsyncMock(
+        return_value=copy_module.deepcopy(COMIC_STORYBOARD_DICT)
+    )
+    event = FakeEvent()
+
+    results = [
+        result async for result in plugin.generate_image(event, "漫画 银发少女的雨夜")
+    ]
+
+    plugin._plan_prompt.assert_not_awaited()
+    plugin._plan_comic_storyboard.assert_awaited_once()
+    assert plugin._plan_comic_storyboard.await_args.args[0] == "银发少女的雨夜"
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, 2-panel manga page, asymmetric comic layout, right-to-left, "
+        "masterpiece, best quality, Panel 1 (右侧竖长主格): medium shot, "
+        "eye level. neon street at night, Panel 2 (左侧小格): close-up, "
+        "low angle, clean panel borders, white gutter",
+        (832, 1216),
+        (
+            "girl, silver hair, holding umbrella, surprised, "
+            'speech bubble, text"雨下大了"',
+            'speech bubble, rectangular narration box, text"第二天"',
+            "girl, black hair, smiling",
+        ),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+        scale=7.0,
+        uc_preset_override=0,
+        use_coords=True,
+        slot_centers=(0.1, 0.3, 0.5),
+    )
+    assert len(results) == 1
+    assert results[0][0] == "plain"
+    assert "漫画分镜" in results[0][1]
+    assert event.sent[0][0] == "image"
+
+
+@pytest.mark.asyncio
+async def test_comic_empty_plot_returns_usage() -> None:
+    """Reject a comic command without a plot."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(event=FakeEvent(), prompt="漫画 ")
+    ]
+
+    assert results == [("plain", "用法：/n5 漫画 <内容>")]
+    plugin._plan_comic_storyboard = AsyncMock()
+    plugin._plan_comic_storyboard.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_comic_size_suffix_applies_to_request() -> None:
+    """Honor a trailing size keyword on comic requests."""
+    import copy as copy_module
+
+    plugin = build_plugin()
+    plugin._plan_comic_storyboard = AsyncMock(
+        return_value=copy_module.deepcopy(COMIC_STORYBOARD_DICT)
+    )
+
+    results = [
+        result
+        async for result in plugin.generate_image(FakeEvent(), "漫画 银发少女 横图")
+    ]
+
+    assert plugin._plan_comic_storyboard.await_args.args[0] == "银发少女"
+    assert plugin._generate_from_api.await_args.args[1] == (1216, 832)
+    assert len(results) == 1

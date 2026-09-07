@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.4.0 - 2026-09-08
+
+- Add `/n5 漫画` multi-panel comic generation: storyboard planning (1-4 panels, refused above the cap), skill-based Base/slot assembly, staggered slot coordinates with `use_coords`, per-panel `text` dialogue, fixed Heavy UC preset and scale 7.0.
+- Credit the NAI5 comic method to the `nai5-prompt-expert` SKILL by 某单机游戏爱好者 in README and SKILL docs.
+
 ## 0.3.0 - 2026-09-08
 
 - Remove the `/n5 尺寸` family of persistent size commands; the default output is now always 832x1216.
