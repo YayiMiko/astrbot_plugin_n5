@@ -185,7 +185,6 @@ def build_plugin(
             "",
         ),
     )
-    plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODEL)
     plugin._join_generation_queue = AsyncMock(return_value=2)
     plugin._leave_generation_queue = AsyncMock()
@@ -414,14 +413,14 @@ async def test_malformed_nai_command_never_reaches_default_llm() -> None:
         (
             "plain",
             "NovelAI 指令格式错误。请使用「/n5 <子指令>」，"
-            "例如：/n5 生成 1girl；发送 /n5 help 查看帮助。",
+            "例如：/n5 生成 1girl；发送 /n5 查看帮助。",
         )
     ]
 
 
 @pytest.mark.asyncio
-async def test_empty_n5_command_returns_copyable_examples() -> None:
-    """Explain generation modes with commands users can copy directly."""
+async def test_bare_n5_command_returns_full_help() -> None:
+    """Show the full command reference when no subcommand is given."""
     plugin = build_plugin()
     event = FakeEvent("/n5")
 
@@ -429,16 +428,7 @@ async def test_empty_n5_command_returns_copyable_examples() -> None:
 
     assert event.call_llm is False
     assert event.stopped is True
-    assert results == [
-        (
-            "plain",
-            "请输入生图描述。\n"
-            "示例：/n5 生成 雪夜车站里的银发少女\n"
-            "其他模式：\n"
-            "/n5 原始 <Prompt>：跳过提示词优化\n"
-            "发送 /n5 help 查看完整帮助。",
-        )
-    ]
+    assert results == [("plain", MODULE.NovelAIWebPlugin._help_text())]
 
 
 @pytest.mark.asyncio
@@ -1542,7 +1532,6 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
         "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
     }
     plugin._check_access = Mock()
-    plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
     plugin._active_artist_string = AsyncMock(return_value=("千代noob", "artist:test"))
     plugin._generation_queue_lock = asyncio.Lock()
@@ -1568,3 +1557,71 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     assert "绘图模型: V5F（Full）" in status
     assert "当前画风: 千代noob" in status
     plugin._read_subscription.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_generation_size_keyword_landscape() -> None:
+    """Use 1216x832 for one request without changing the default size."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(FakeEvent(), "生成 雪夜少女 横图")
+    ]
+
+    assert plugin._plan_prompt.await_args.args[0] == "雪夜少女"
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, planned prompt",
+        (1216, 832),
+        (),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_generation_size_keyword_square() -> None:
+    """Use 1024x1024 for one request without changing the default size."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(FakeEvent(), "生成 雪夜少女 方图")
+    ]
+
+    assert plugin._plan_prompt.await_args.args[0] == "雪夜少女"
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, planned prompt",
+        (1024, 1024),
+        (),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_generation_size_keyword_ultrawide() -> None:
+    """Use 1536x640 for one cinematic request within the pixel cap."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(), "生成 雪夜少女 电影超宽屏"
+        )
+    ]
+
+    assert plugin._plan_prompt.await_args.args[0] == "雪夜少女"
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, planned prompt",
+        (1536, 640),
+        (),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+    )
+    assert results == []

@@ -140,10 +140,12 @@ OFFICIAL_SOURCE_MANIFEST_PATH = PROMPT_KNOWLEDGE_DIR / "source-manifest.json"
 LOCAL_PREFERENCES_PATH = PROMPT_KNOWLEDGE_DIR / "local-preferences.json"
 IMAGE_MAGIC = (b"\x89PNG\r\n\x1a\n", b"\xff\xd8\xff", b"RIFF")
 DEFAULT_GENERATION_SIZE = (832, 1216)
-GENERATION_SIZE_PRESETS = {
+REQUEST_SIZE_KEYWORDS = {
     "竖图": (832, 1216),
     "横图": (1216, 832),
     "方图": (1024, 1024),
+    "超宽屏": (1536, 640),
+    "电影超宽屏": (1536, 640),
 }
 
 
@@ -163,8 +165,6 @@ class ArtistUserState(TypedDict):
     last_character_prompts_by_library: dict[str, list[str]]
     last_character_negative_prompts_by_library: dict[str, list[str]]
     image_model: str
-    width: int
-    height: int
 
 
 class ArtistState(TypedDict):
@@ -256,7 +256,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.2.0",
+    "0.3.0",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -385,7 +385,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.2.0",
+                    "User-Agent": "AstrBot-N5/0.3.0",
                 },
                 follow_redirects=False,
             )
@@ -462,11 +462,11 @@ class NovelAIWebPlugin(star.Star):
             [
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
+                "  尾缀 横图/方图/超宽屏 指定本次尺寸，默认 832x1216 竖图",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 角色 [名称] - 列出或查看自己的角色",
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
                 "/n5 模型 [V5C|V5F] - 查看或切换绘图模型",
-                "/n5 尺寸 竖图|横图|方图|<宽>x<高> - 设置免费尺寸",
                 "/n5 状态 - 检查 API 与当前设置",
                 "角色与画风管理仍支持：添加画师串、创建人物、删除人物、确认。",
             ]
@@ -974,8 +974,6 @@ class NovelAIWebPlugin(star.Star):
                     and legacy_library_key not in active_by_library
                 ):
                     active_by_library[legacy_library_key] = raw_active
-                raw_width = raw_user.get("width", DEFAULT_GENERATION_SIZE[0])
-                raw_height = raw_user.get("height", DEFAULT_GENERATION_SIZE[1])
                 negative_prompt_by_library: dict[str, str] = {}
                 raw_negative_prompts = raw_user.get(
                     "negative_prompt_by_library",
@@ -1076,13 +1074,6 @@ class NovelAIWebPlugin(star.Star):
                             last_character_negative_prompts_by_library[library_key] = (
                                 normalized_negative_prompts
                             )
-                try:
-                    width, height = self._validate_generation_size(
-                        int(raw_width),
-                        int(raw_height),
-                    )
-                except (TypeError, ValueError, NovelAIWebError):
-                    width, height = DEFAULT_GENERATION_SIZE
                 raw_image_model = raw_user.get("image_model", "")
                 try:
                     image_model = (
@@ -1106,8 +1097,6 @@ class NovelAIWebPlugin(star.Star):
                         last_character_negative_prompts_by_library
                     ),
                     "image_model": image_model,
-                    "width": width,
-                    "height": height,
                 }
         return {"version": 7, "libraries": libraries, "users": users}
 
@@ -2127,8 +2116,6 @@ class NovelAIWebPlugin(star.Star):
             "last_character_prompts_by_library": {},
             "last_character_negative_prompts_by_library": {},
             "image_model": "",
-            "width": DEFAULT_GENERATION_SIZE[0],
-            "height": DEFAULT_GENERATION_SIZE[1],
         }
 
     @staticmethod
@@ -2610,49 +2597,6 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError(f"本群画师串中不存在「{normalized_name}」。")
         return f"画师串「{normalized_name}」\n{content}"
 
-    async def _set_user_generation_size(
-        self,
-        event: AstrMessageEvent,
-        width: int,
-        height: int,
-    ) -> tuple[int, int]:
-        """Persist one validated generation size for the current QQ user."""
-        width, height = self._validate_generation_size(width, height)
-        sender_id = self._artist_owner_id(event)
-        async with self._artist_state_lock:
-            state = self._load_artist_state()
-            user_state = state["users"].setdefault(
-                sender_id,
-                self._new_user_state(),
-            )
-            user_state["width"] = width
-            user_state["height"] = height
-            self._save_artist_state(state)
-        return width, height
-
-    async def _user_generation_size(
-        self,
-        event: AstrMessageEvent,
-    ) -> tuple[int, int]:
-        """Return the generation size selected by the current QQ user."""
-        sender_id = self._artist_owner_id(event)
-        async with self._artist_state_lock:
-            state = self._load_artist_state()
-            user_state = state["users"].get(sender_id)
-            if user_state is None:
-                return DEFAULT_GENERATION_SIZE
-            return user_state["width"], user_state["height"]
-
-    def _parse_custom_size(self, value: str) -> tuple[int, int]:
-        """Parse custom sizes written as WIDTHxHEIGHT or WIDTH HEIGHT."""
-        match = re.fullmatch(r"\s*(\d+)\s*[xX×*\s]\s*(\d+)\s*", value)
-        if match is None:
-            raise NovelAIWebError("用法：/n5 自定义大小 <宽>x<高>")
-        return self._validate_generation_size(
-            int(match.group(1)),
-            int(match.group(2)),
-        )
-
     async def _join_generation_queue(self) -> int:
         """Register a generation request and return the number ahead of it."""
         async with self._generation_queue_lock:
@@ -2848,7 +2792,7 @@ class NovelAIWebPlugin(star.Star):
             return
         yield event.plain_result(
             "NovelAI 指令格式错误。请使用「/n5 <子指令>」，"
-            "例如：/n5 生成 1girl；发送 /n5 help 查看帮助。"
+            "例如：/n5 生成 1girl；发送 /n5 查看帮助。"
         )
 
     @filter.command("n5_status")
@@ -2862,7 +2806,7 @@ class NovelAIWebPlugin(star.Star):
         event.stop_event()
         try:
             self._check_access(event)
-            width, height = await self._user_generation_size(event)
+            width, height = DEFAULT_GENERATION_SIZE
             image_model = await self._user_image_model(event)
             selected_artist = await self._active_artist_string(event)
             async with self._generation_queue_lock:
@@ -2938,7 +2882,7 @@ class NovelAIWebPlugin(star.Star):
         event.should_call_llm(False)
         event.stop_event()
         prompt_text = str(prompt).strip()
-        if prompt_text.casefold() == "help":
+        if not prompt_text:
             try:
                 self._check_access(event)
             except NovelAIWebError as exc:
@@ -2959,23 +2903,6 @@ class NovelAIWebPlugin(star.Star):
                 arguments = arguments.removeprefix("查看 ").strip()
             else:
                 subcommand = "切换画师串"
-        elif subcommand == "尺寸":
-            selected_size = GENERATION_SIZE_PRESETS.get(arguments)
-            try:
-                self._check_access(event)
-                if selected_size is not None:
-                    width, height = await self._set_user_generation_size(
-                        event,
-                        *selected_size,
-                    )
-                else:
-                    width, height = self._parse_custom_size(arguments)
-                    await self._set_user_generation_size(event, width, height)
-            except NovelAIWebError as exc:
-                yield event.plain_result(str(exc))
-                return
-            yield event.plain_result(f"你的生成尺寸已设置为 {width}x{height}。")
-            return
         elif subcommand == "模型":
             try:
                 self._check_access(event)
@@ -3150,45 +3077,21 @@ class NovelAIWebPlugin(star.Star):
             yield event.plain_result(character_text)
             return
 
-        if subcommand == "切换大小":
-            try:
-                self._check_access(event)
-                selected_size = GENERATION_SIZE_PRESETS.get(arguments)
-                if selected_size is None:
-                    raise NovelAIWebError("用法：/n5 切换大小 竖图|横图|方图")
-                width, height = await self._set_user_generation_size(
-                    event,
-                    *selected_size,
-                )
-            except NovelAIWebError as exc:
-                yield event.plain_result(str(exc))
-                return
-            yield event.plain_result(
-                f"你的生成大小已切换为「{arguments}」{width}x{height}。"
-            )
-            return
-
-        if subcommand == "自定义大小":
-            try:
-                self._check_access(event)
-                width, height = self._parse_custom_size(arguments)
-                await self._set_user_generation_size(event, width, height)
-            except NovelAIWebError as exc:
-                yield event.plain_result(str(exc))
-                return
-            yield event.plain_result(f"你的自定义生成大小已设置为 {width}x{height}。")
-            return
-
         if subcommand not in {"生成", "原始"}:
             yield event.plain_result(
                 "请输入生图描述。\n"
                 "示例：/n5 生成 雪夜车站里的银发少女\n"
                 "其他模式：\n"
                 "/n5 原始 <Prompt>：跳过提示词优化\n"
-                "发送 /n5 help 查看完整帮助。"
+                "发送 /n5 查看完整帮助。"
             )
             return
         prompt_text = arguments
+        generation_size = DEFAULT_GENERATION_SIZE
+        size_match = re.search(r"(竖图|横图|方图|电影超宽屏|超宽屏)\s*$", prompt_text)
+        if size_match:
+            generation_size = REQUEST_SIZE_KEYWORDS[size_match.group(1)]
+            prompt_text = prompt_text[: size_match.start()].rstrip(" ,，;；")
         prompt_parts = [part.strip() for part in prompt_text.split(",") if part.strip()]
         is_direct_prompt = subcommand == "原始"
         if not is_direct_prompt and not NATURAL_LANGUAGE_SCRIPT_PATTERN.search(
@@ -3256,7 +3159,6 @@ class NovelAIWebPlugin(star.Star):
                 raise NovelAIWebError(
                     "当前画师串与人物 Prompt 已占满 Prompt 长度上限。"
                 )
-            generation_size = await self._user_generation_size(event)
             negative_prompt = DEFAULT_NEGATIVE_PROMPT
         except NovelAIWebError as exc:
             yield event.plain_result(str(exc))

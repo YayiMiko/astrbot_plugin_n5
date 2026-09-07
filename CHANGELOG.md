@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.0 - 2026-09-08
+
+- Remove the `/n5 尺寸` family of persistent size commands; the default output is now always 832x1216.
+- Support per-request sizes with trailing keywords: 横图 uses 1216x832, 方图 uses 1024x1024, 超宽屏/电影超宽屏 uses 1536x640.
+- Show the full command reference on a bare `/n5`; the `/n5 help` subcommand is gone.
+
 ## 0.2.0 - 2026-09-08
 
 - Remove `/n5 漫画`, `/n5 漫画抽卡`, `/n5 参考`, `/n5 再来`, `/n5 重抽`, `/n5 重发`, `/n5 最近`, `/n5 负面`, and `/n5 诊断` along with their planners, state, and skill references.
