@@ -1,4 +1,10 @@
 {
+  "novelai_api_token": {
+    "description": "NovelAI 持久令牌 PAT",
+    "type": "string",
+    "default": "",
+    "hint": "以 pst- 开头；敏感信息。填写后优先于环境变量生效；留空时回退到 NOVELAI_API_TOKEN 环境变量。"
+  },
   "allowed_sender_ids": {
     "description": "NovelAI 使用者 QQ 白名单",
     "type": "list",
