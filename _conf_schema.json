@@ -9,18 +9,18 @@
     "description": "NovelAI 使用者 QQ 白名单",
     "type": "list",
     "default": [],
-    "hint": "私聊和群聊统一校验；留空时拒绝所有 NovelAI 指令。"
+    "hint": "私聊和群聊统一校验；留空时向所有人开放，填写后仅名单中的 QQ 可用。"
   },
   "bug_report_admin_ids": {
     "description": "Bug 反馈私聊通知 QQ",
     "type": "list",
     "default": [],
-    "hint": "反馈会先本地保存，再私聊通知这些 QQ；留空时回退到私聊控制者白名单。"
+    "hint": "反馈会先本地保存，再私聊通知这些 QQ；留空时仅本地保存。"
   },
   "allow_group": {
     "description": "允许群聊触发",
     "type": "bool",
-    "default": false,
+    "default": true,
     "hint": "总开关；开启且群号白名单留空时，对使用者白名单开放所有群。"
   },
   "allowed_group_ids": {

@@ -186,6 +186,7 @@ def build_plugin(
         ),
     )
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODEL)
+    plugin._user_nsfw_enabled = AsyncMock(return_value=True)
     plugin._join_generation_queue = AsyncMock(return_value=2)
     plugin._leave_generation_queue = AsyncMock()
     plugin._plan_prompt = AsyncMock(
@@ -214,6 +215,30 @@ def test_sender_whitelist_applies_to_private_and_group_commands() -> None:
         plugin._check_access(AccessEvent(sender_id="10002", private=True))
     with pytest.raises(MODULE.NovelAIWebError, match="使用者白名单"):
         plugin._check_access(AccessEvent(sender_id="10002"))
+
+
+def test_empty_sender_whitelist_opens_access_to_everyone() -> None:
+    """Treat an empty sender list as unrestricted in any conversation."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "allowed_sender_ids": [],
+        "allow_group": True,
+        "allowed_group_ids": [],
+    }
+
+    plugin._check_access(AccessEvent(sender_id="10002", private=True))
+    plugin._check_access(AccessEvent(sender_id="10002"))
+
+
+def test_group_access_defaults_to_open_without_config_key() -> None:
+    """Allow group chats when the allow_group key is absent."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "allowed_sender_ids": [],
+        "allowed_group_ids": [],
+    }
+
+    plugin._check_access(AccessEvent(sender_id="10002"))
 
 
 def test_empty_group_whitelist_allows_authorized_sender_in_every_group() -> None:
@@ -265,6 +290,7 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -294,6 +320,7 @@ async def test_natural_language_still_uses_planner() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -351,6 +378,7 @@ async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -396,6 +424,7 @@ async def test_explicit_raw_character_tag_still_skips_planning() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1004,6 +1033,7 @@ async def test_character_generation_uses_native_captions() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1051,6 +1081,7 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1557,6 +1588,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     }
     plugin._check_access = Mock()
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
+    plugin._user_nsfw_enabled = AsyncMock(return_value=True)
     plugin._active_artist_string = AsyncMock(return_value=("千代noob", "artist:test"))
     plugin._generation_queue_lock = asyncio.Lock()
     plugin._generation_queue_size = 3
@@ -1580,6 +1612,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     assert "Prompt 模型: deepseek/deepseek-v4-flash-vision-exp" in status
     assert "绘图模型: V5F（Full）" in status
     assert "当前画风: 千代noob" in status
+    assert "NSFW: 开" in status
     plugin._read_subscription.assert_awaited_once()
 
 
@@ -1605,6 +1638,7 @@ async def test_generation_size_keyword_landscape() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1631,6 +1665,7 @@ async def test_generation_size_keyword_square() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1659,6 +1694,7 @@ async def test_generation_size_keyword_ultrawide() -> None:
         uc_preset_override=None,
         use_coords=False,
         slot_centers=None,
+        apply_nsfw=True,
     )
     assert results == []
 
@@ -1791,6 +1827,37 @@ def test_comic_build_skips_saved_appearance() -> None:
     assert "第 1 格" in summary
 
 
+def test_comic_build_dedupes_repeated_identity_in_panel() -> None:
+    """Collapse identical characters that the planner repeats in one panel."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    character = {
+        "slot": "",
+        "identity": "cartethyia (wuthering waves), girl",
+        "state": "waking up",
+        "dialogue": "",
+    }
+    storyboard = {
+        "reading_order": "right-to-left",
+        "panels": [
+            {
+                "panel": 1,
+                "placement": "整页单格",
+                "shot": "",
+                "camera": "",
+                "scene": "",
+                "characters": [character, dict(character), dict(character)],
+                "narration": "",
+            }
+        ],
+    }
+
+    base, captions, summary = plugin._build_comic_prompts(storyboard, [])
+
+    assert captions == ["cartethyia (wuthering waves), girl, waking up"]
+    assert summary.count("cartethyia (wuthering waves), girl") == 1
+    assert "1-panel manga page" in base
+
+
 def test_comic_slot_centers_follow_stagger_table() -> None:
     """Stagger slot coordinates per the comic skill table."""
     assert MODULE.NovelAIWebPlugin._comic_slot_centers(1) == [0.1]
@@ -1831,16 +1898,15 @@ async def test_comic_command_uses_comic_payload() -> None:
             "girl, black hair, smiling",
         ),
         "",
-        (),
+        ("", "", ""),
         image_model=MODULE.NOVELAI_MODEL,
         scale=7.0,
         uc_preset_override=0,
         use_coords=True,
         slot_centers=(0.1, 0.3, 0.5),
+        apply_nsfw=True,
     )
-    assert len(results) == 1
-    assert results[0][0] == "plain"
-    assert "漫画分镜" in results[0][1]
+    assert results == []
     assert event.sent[0][0] == "image"
 
 
@@ -1876,4 +1942,79 @@ async def test_comic_size_suffix_applies_to_request() -> None:
 
     assert plugin._plan_comic_storyboard.await_args.args[0] == "银发少女"
     assert plugin._generate_from_api.await_args.args[1] == (1216, 832)
-    assert len(results) == 1
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_nsfw_command_toggles_switch() -> None:
+    """Flip the NSFW switch when no explicit selection is given."""
+    plugin = build_plugin()
+    plugin._user_nsfw_enabled = AsyncMock(side_effect=[True, False, False, True])
+    event = FakeEvent()
+
+    results = [result async for result in plugin.generate_image(event, "nsfw")]
+
+    assert results == [("plain", "你的 NSFW 已关闭。生图时不再加入 nsfw 方向词。")]
+    results = [result async for result in plugin.generate_image(event, "nsfw")]
+
+    assert results == [("plain", "你的 NSFW 已开启。生图时会自动加入 nsfw 方向词。")]
+
+
+@pytest.mark.asyncio
+async def test_nsfw_command_explicit_on_off() -> None:
+    """Persist an explicit NSFW switch selection."""
+    plugin = build_plugin()
+    plugin._user_nsfw_enabled = AsyncMock(return_value=False)
+    event = FakeEvent()
+
+    results = [result async for result in plugin.generate_image(event, "nsfw 关")]
+
+    plugin._user_nsfw_enabled.assert_awaited_once_with(event, "关")
+    assert results == [("plain", "你的 NSFW 已关闭。生图时不再加入 nsfw 方向词。")]
+
+
+@pytest.mark.asyncio
+async def test_nsfw_disabled_skips_token_but_strips_rating() -> None:
+    """Skip the nsfw token while still removing rating tags."""
+    plugin = build_plugin()
+    plugin._user_nsfw_enabled = AsyncMock(return_value=False)
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(), "生成 1girl, rating:general"
+        )
+    ]
+
+    plugin._generate_from_api.assert_awaited_once_with(
+        "1girl",
+        (832, 1216),
+        (),
+        "",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
+        apply_nsfw=False,
+    )
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_nsfw_switch_is_persistent_and_user_scoped(
+    tmp_path: Path,
+) -> None:
+    """Persist the NSFW switch for one QQ without changing another user."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {}
+    plugin._artist_state_lock = asyncio.Lock()
+    plugin._artist_state_path = Mock(return_value=tmp_path / "artist_strings.json")
+    first_user = CharacterEvent()
+    other_user = CharacterEvent(sender_id="10002")
+
+    assert await plugin._user_nsfw_enabled(first_user) is True
+    assert await plugin._user_nsfw_enabled(first_user, "关") is False
+    assert await plugin._user_nsfw_enabled(first_user) is False
+    assert await plugin._user_nsfw_enabled(other_user) is True

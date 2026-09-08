@@ -14,7 +14,7 @@
 - **NovelAI PNG 元数据优先**：带图请求会先读取 PNG 内嵌的 `Description` / `Comment` 元数据，身份事实优先于视觉猜测。
 - **人物库**：群成员可保存「全局人物」，命中角色名时自动注入固定身份与固有外观，再由规划器补全本图服装、道具与动态（`/n5 漫画` 按分镜 skill 只写 `角色名, girl/boy`，不注入固定外观）。
 - **画师串**：预设与切换画师串（`artist:` 风格串），由插件在最终 Prompt 前独立拼接；规划器只生成主 Prompt，不生成或修改画师串。
-- **全局 NSFW 语义方向**：所有生图请求保留字面 `nsfw`，同时删除 `rating:` 内容分级词；具体细节由规划器按用户意图决定，不套用固定 Tag 包。
+- **全局 NSFW 语义方向**：默认所有生图请求保留字面 `nsfw`，同时删除 `rating:` 内容分级词；每人可用 `/n5 nsfw [开|关]` 独立开关自己的 NSFW（`rating:` 照删不误）。
 - **固定尺寸**：默认 832x1216 竖图；单次请求尾缀横图 / 方图 / 超宽屏分别使用 1216x832 / 1024x1024 / 1536x640，均不超免费像素上限。
 - **多格漫画**：`/n5 漫画` 先规划 1–4 格分镜（景别/机位/台词分配），再按 Base 只画框、角色全进槽位的规则生成；分镜方法来自某单机游戏爱好者的 NAI5 SKILL（`nai5-prompt-expert`），版权角色不写固定设定，单页超 4 格会拒绝并提示拆页。
 - **V5 模型切换**：WebUI 下拉设置默认模型，聊天中可按用户切换 V5C / V5F。
@@ -61,9 +61,9 @@ pip install -r requirements.txt
 | 参数 | 说明 | 默认 |
 |---|---|---|
 | `novelai_api_token` | NovelAI 持久令牌 PAT；非空时优先于环境变量生效 | `""` |
-| `allowed_sender_ids` | 允许使用 NovelAI 的 QQ 白名单；**留空时拒绝所有指令** | `[]` |
-| `bug_report_admin_ids` | Bug 反馈私聊通知的 QQ 列表；留空时回退到控制者白名单 | `[]` |
-| `allow_group` | 是否允许群聊触发（总开关） | `false` |
+| `allowed_sender_ids` | 允许使用 NovelAI 的 QQ 白名单；留空时向所有人开放 | `[]` |
+| `bug_report_admin_ids` | Bug 反馈私聊通知的 QQ 列表；留空时仅本地保存 | `[]` |
+| `allow_group` | 是否允许群聊触发（总开关） | `true` |
 | `allowed_group_ids` | 允许使用 NovelAI 的群号白名单；留空时所有群开放 | `[]` |
 | `max_total_pixels` | 免费生成总像素上限 | `1048576` |
 | `max_steps` | 免费生成 Steps 上限 | `28` |
@@ -121,6 +121,7 @@ python scripts/configure_pat.py
 | `/n5 生成 <内容>` | 自然语言扩写；附图时使用 DS4F Vision 参考 |
 | `/n5 生成 <内容> 横图\|方图\|超宽屏` | 本次使用 1216x832 / 1024x1024 / 1536x640，默认 832x1216 |
 | `/n5 漫画 <剧情>` | 规划并生成多格漫画页（最多 4 格，超格请拆页） |
+| `/n5 nsfw [开\|关]` | 查看或切换自己的 NSFW，不带参数时取反 |
 | `/n5 原始 <Prompt>` | 跳过自然语言规划，原样生成 |
 | `/n5 角色 [名称]` | 列出或查看自己的角色（等价 `/n5 人物`） |
 | `/n5 画风 [名称\|默认\|原生]` | 查看或切换画风（等价 `画师串` / `切换画师串` / `查看画师串`） |
@@ -141,11 +142,11 @@ python scripts/configure_pat.py
 
 ## 权限控制
 
-插件默认**失败即关闭**（fail-closed）：
+插件默认向所有人开放生图权限：
 
-- 只有 `allowed_sender_ids` 白名单中的 QQ 才能执行 NovelAI 指令，私聊和群聊统一校验；**列表留空时拒绝所有指令**。
-- `allow_group=false` 时禁止群聊使用。
-- 群聊中即使开启了 `allow_group`，也仍只允许 `allowed_sender_ids` 中的账号执行。
+- `allowed_sender_ids` 留空时任何 QQ 都能执行 NovelAI 指令（私聊和群聊统一校验）；填入名单后只允许名单中的账号执行。
+- 群聊默认开放；`allow_group=false` 时禁止群聊使用。
+- 群聊中即使开启了 `allow_group`，`allowed_sender_ids` 非空时仍只允许名单中的账号执行。
 - `allowed_group_ids` 留空时允许所有群，非空时只放行白名单群号。
 
 ---
@@ -166,7 +167,7 @@ python scripts/configure_pat.py
 
 ## 常见问题
 
-- **提示「当前 QQ 不在白名单」**：在 AstrBot 配置中把 QQ 号加入 `allowed_sender_ids`。
+- **提示「当前 QQ 不在白名单」**：在 AstrBot 配置中把 QQ 号加入 `allowed_sender_ids`，或清空该名单向所有人开放。
 - **提示「不是有效的 NovelAI Opus」**：免费生成路径只对有效的 Opus（`tier=3`）开放。
 - **提示「未配置 PAT」**：在插件配置页填写 `novelai_api_token`，或设置 `NOVELAI_API_TOKEN` 环境变量，或用 `configure_pat.py` 生成 DPAPI 文件。
 - **附图没参与规划**：附图只在自然语言模式（`/n5 生成`、`/n5 漫画`）下作为规划参考，且规划模型必须支持原生图片输入；`/n5 原始` 跳过规划，图片仅随请求发送。

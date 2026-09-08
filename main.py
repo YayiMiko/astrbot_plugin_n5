@@ -178,6 +178,7 @@ class ArtistUserState(TypedDict):
     last_character_prompts_by_library: dict[str, list[str]]
     last_character_negative_prompts_by_library: dict[str, list[str]]
     image_model: str
+    nsfw_enabled: bool
 
 
 class ArtistState(TypedDict):
@@ -297,7 +298,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.4.0",
+    "0.4.1",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -426,7 +427,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.4.0",
+                    "User-Agent": "AstrBot-N5/0.4.1",
                 },
                 follow_redirects=False,
             )
@@ -477,16 +478,20 @@ class NovelAIWebPlugin(star.Star):
         *,
         allow_group_access: bool = True,
     ) -> None:
-        """Apply fail-closed sender authorization in private chats and groups."""
+        """Apply sender authorization in private chats and groups.
+
+        An empty sender whitelist opens generation to everyone; a non-empty
+        list restricts usage to the listed QQ accounts.
+        """
         sender_id = str(event.get_sender_id()).strip()
         allowed_ids = self._normalize_id_list(self.config.get("allowed_sender_ids", []))
-        if not allowed_ids or sender_id not in allowed_ids:
+        if allowed_ids and sender_id not in allowed_ids:
             raise NovelAIWebError("当前 QQ 不在 NovelAI 插件的使用者白名单中。")
 
         if event.is_private_chat():
             return
 
-        if not allow_group_access or not bool(self.config.get("allow_group", False)):
+        if not allow_group_access or not bool(self.config.get("allow_group", True)):
             raise NovelAIWebError("当前 NovelAI 指令不允许在群聊中使用。")
 
         group_id = str(event.get_group_id()).strip()
@@ -505,6 +510,7 @@ class NovelAIWebPlugin(star.Star):
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
                 "  尾缀 横图/方图/超宽屏 指定本次尺寸，默认 832x1216 竖图",
                 "/n5 漫画 <剧情> - 规划并生成多格漫画页（最多 4 格）",
+                "/n5 nsfw [开|关] - 查看或切换 NSFW 方向词，不带参数时取反",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 角色 [名称] - 列出或查看自己的角色",
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
@@ -1187,8 +1193,13 @@ class NovelAIWebPlugin(star.Star):
                     f'speech bubble, rectangular narration box, text"{narration}"'
                 )
             panel_cast: list[str] = []
+            seen_in_panel: set[tuple[str, str]] = set()
             for character in panel["characters"]:
                 identity = character["identity"]
+                dedupe_key = (character["slot"], identity.casefold())
+                if dedupe_key in seen_in_panel:
+                    continue
+                seen_in_panel.add(dedupe_key)
                 if not re.search(
                     r"(?i)(?<![a-z0-9_])(?:girl|boy|other)(?![a-z0-9_])",
                     identity,
@@ -1405,6 +1416,10 @@ class NovelAIWebPlugin(star.Star):
                     )
                 except NovelAIWebError:
                     image_model = ""
+                raw_nsfw_enabled = raw_user.get("nsfw_enabled", True)
+                nsfw_enabled = (
+                    raw_nsfw_enabled if isinstance(raw_nsfw_enabled, bool) else True
+                )
                 users[sender_id] = {
                     "active_by_library": active_by_library,
                     "negative_prompt_by_library": negative_prompt_by_library,
@@ -1419,6 +1434,7 @@ class NovelAIWebPlugin(star.Star):
                         last_character_negative_prompts_by_library
                     ),
                     "image_model": image_model,
+                    "nsfw_enabled": nsfw_enabled,
                 }
         return {"version": 7, "libraries": libraries, "users": users}
 
@@ -1769,14 +1785,16 @@ class NovelAIWebPlugin(star.Star):
         return normalized_content
 
     @staticmethod
-    def _apply_global_nsfw_prompt(content: str) -> str:
+    def _apply_global_nsfw_prompt(content: str, enabled: bool = True) -> str:
         """Apply the global NSFW direction without content-rating tags.
 
         Args:
             content: Positive prompt before the NovelAI request.
+            enabled: Whether to prepend the global ``nsfw`` token.
 
         Returns:
-            Prompt with one global ``nsfw`` token and no ``rating:`` items.
+            Prompt with one global ``nsfw`` token when enabled and no
+            ``rating:`` items in either case.
         """
         text_block = ""
         text_block_match = re.search(r"(?i)\ntext\s*:", content)
@@ -1790,12 +1808,13 @@ class NovelAIWebPlugin(star.Star):
             if item.casefold() != "nsfw"
             and not re.search(r"(?i)(?<![a-z0-9_])rating\s*:", item)
         ]
-        insert_at = 0
-        while insert_at < len(prompt_items) and re.match(
-            r"(?i)^artist\s*:", prompt_items[insert_at]
-        ):
-            insert_at += 1
-        prompt_items.insert(insert_at, "nsfw")
+        if enabled:
+            insert_at = 0
+            while insert_at < len(prompt_items) and re.match(
+                r"(?i)^artist\s*:", prompt_items[insert_at]
+            ):
+                insert_at += 1
+            prompt_items.insert(insert_at, "nsfw")
         return ", ".join(prompt_items) + text_block
 
     @staticmethod
@@ -2438,6 +2457,7 @@ class NovelAIWebPlugin(star.Star):
             "last_character_prompts_by_library": {},
             "last_character_negative_prompts_by_library": {},
             "image_model": "",
+            "nsfw_enabled": True,
         }
 
     @staticmethod
@@ -2503,6 +2523,56 @@ class NovelAIWebPlugin(star.Star):
             user_state["image_model"] = image_model
             self._save_artist_state(state)
             return image_model
+
+    @staticmethod
+    def _normalize_nsfw_selection(value: str) -> bool:
+        """Normalize one NSFW switch selection.
+
+        Args:
+            value: User-facing switch value such as 开, 关, on, or off.
+
+        Returns:
+            True to enable the global NSFW direction, False to disable it.
+
+        Raises:
+            NovelAIWebError: If the value does not select a switch position.
+        """
+        normalized = re.sub(r"\s+", "", str(value).casefold())
+        if normalized in {"开", "on", "true", "1"}:
+            return True
+        if normalized in {"关", "off", "false", "0"}:
+            return False
+        raise NovelAIWebError("用法：/n5 nsfw [开|关]")
+
+    async def _user_nsfw_enabled(
+        self,
+        event: AstrMessageEvent,
+        selection: str | None = None,
+    ) -> bool:
+        """Read or persist this QQ user's NSFW direction switch.
+
+        Args:
+            event: Message event identifying the QQ user.
+            selection: Optional switch selection to persist.
+
+        Returns:
+            True when the global ``nsfw`` token should be prepended.
+        """
+        sender_id = self._artist_owner_id(event)
+        async with self._artist_state_lock:
+            state = self._load_artist_state()
+            user_state = state["users"].get(sender_id)
+            if selection is None:
+                if user_state is None:
+                    return True
+                return user_state.get("nsfw_enabled", True)
+            nsfw_enabled = self._normalize_nsfw_selection(selection)
+            if user_state is None:
+                user_state = self._new_user_state()
+                state["users"][sender_id] = user_state
+            user_state["nsfw_enabled"] = nsfw_enabled
+            self._save_artist_state(state)
+            return nsfw_enabled
 
     @staticmethod
     def _is_delivery_ack_timeout(exc: Exception) -> bool:
@@ -3053,10 +3123,6 @@ class NovelAIWebPlugin(star.Star):
             ]
         )
         admin_ids = self._normalize_id_list(self.config.get("bug_report_admin_ids", []))
-        if not admin_ids:
-            admin_ids = self._normalize_id_list(
-                self.config.get("allowed_sender_ids", [])
-            )
         delivered = 0
         failed = 0
         for admin_id in sorted(admin_ids):
@@ -3130,6 +3196,7 @@ class NovelAIWebPlugin(star.Star):
             self._check_access(event)
             width, height = DEFAULT_GENERATION_SIZE
             image_model = await self._user_image_model(event)
+            nsfw_enabled = await self._user_nsfw_enabled(event)
             selected_artist = await self._active_artist_string(event)
             async with self._generation_queue_lock:
                 queue_total = self._generation_queue_size
@@ -3188,6 +3255,7 @@ class NovelAIWebPlugin(star.Star):
             f"Prompt 模型: {planner_provider}\n"
             f"绘图模型: {NOVELAI_MODEL_LABELS[image_model]}\n"
             f"当前画风: {selected_artist[0] if selected_artist else '原生'}\n"
+            f"NSFW: {'开' if nsfw_enabled else '关'}\n"
             f"尺寸: {width}x{height}\n"
             f"Steps: {steps}\n"
             f"免费参数保护: {'通过' if free_eligible else '不通过'}"
@@ -3239,6 +3307,27 @@ class NovelAIWebPlugin(star.Star):
                         f"当前绘图模型：{NOVELAI_MODEL_LABELS[image_model]}\n"
                         "切换：/n5 模型 V5C 或 /n5 模型 V5F"
                     )
+            except NovelAIWebError as exc:
+                yield event.plain_result(str(exc))
+            return
+        elif subcommand == "nsfw":
+            try:
+                self._check_access(event)
+                if arguments:
+                    nsfw_enabled = await self._user_nsfw_enabled(event, arguments)
+                else:
+                    current = await self._user_nsfw_enabled(event)
+                    nsfw_enabled = await self._user_nsfw_enabled(
+                        event, "关" if current else "开"
+                    )
+                yield event.plain_result(
+                    f"你的 NSFW 已{'开启' if nsfw_enabled else '关闭'}。"
+                    + (
+                        "生图时会自动加入 nsfw 方向词。"
+                        if nsfw_enabled
+                        else "生图时不再加入 nsfw 方向词。"
+                    )
+                )
             except NovelAIWebError as exc:
                 yield event.plain_result(str(exc))
             return
@@ -3449,6 +3538,7 @@ class NovelAIWebPlugin(star.Star):
                 )
             image_context = await self._request_image_context(event)
             image_model = await self._user_image_model(event)
+            nsfw_enabled = await self._user_nsfw_enabled(event)
             selected_artist = await self._active_artist_string(event)
             artist_prefix_length = 0
             if selected_artist is not None:
@@ -3491,7 +3581,6 @@ class NovelAIWebPlugin(star.Star):
             return
 
         await self._join_generation_queue()
-        storyboard_summary = ""
         try:
             try:
                 async with self._generation_semaphore:
@@ -3502,17 +3591,15 @@ class NovelAIWebPlugin(star.Star):
                             image_context.image_urls,
                             image_context.metadata_prompt,
                         )
-                        prompt_text, comic_captions, storyboard_summary = (
-                            self._build_comic_prompts(
-                                storyboard,
-                                character_replacements,
-                            )
+                        prompt_text, comic_captions, _ = self._build_comic_prompts(
+                            storyboard,
+                            character_replacements,
                         )
                         character_prompts = tuple(comic_captions)
                         slot_centers: tuple[float, ...] | None = tuple(
                             self._comic_slot_centers(len(comic_captions))
                         )
-                        character_negative_prompts = ()
+                        character_negative_prompts = tuple("" for _ in comic_captions)
                     elif not is_direct_prompt:
                         slot_centers = None
                         plan = await self._plan_prompt(
@@ -3577,7 +3664,9 @@ class NovelAIWebPlugin(star.Star):
                         negative_prompt = ", ".join(negative_items)
                     if selected_artist is not None:
                         prompt_text = f"{artist_content}, {prompt_text}"
-                    prompt_text = self._apply_global_nsfw_prompt(prompt_text)
+                    prompt_text = self._apply_global_nsfw_prompt(
+                        prompt_text, nsfw_enabled
+                    )
                     if len(prompt_text) + sum(map(len, character_prompts)) > (
                         max_prompt_length
                     ):
@@ -3597,6 +3686,7 @@ class NovelAIWebPlugin(star.Star):
                         ),
                         use_coords=comic_mode,
                         slot_centers=slot_centers,
+                        apply_nsfw=nsfw_enabled,
                     )
             except NovelAIWebError as exc:
                 yield event.plain_result(f"生成失败：{exc}")
@@ -3615,8 +3705,6 @@ class NovelAIWebPlugin(star.Star):
                 + "、".join(unresolved_identities)
                 + "。本次已保留 DS4F 给出的候选与外观描述。"
             )
-        if comic_mode and storyboard_summary:
-            yield event.plain_result(storyboard_summary)
         await self._deliver_generated_image(event, output_path)
 
     async def _generate_from_api(
@@ -3632,6 +3720,7 @@ class NovelAIWebPlugin(star.Star):
         uc_preset_override: int | None = None,
         use_coords: bool = False,
         slot_centers: tuple[float, ...] | None = None,
+        apply_nsfw: bool = True,
     ) -> Path:
         """Submit one guarded free-generation request to the NovelAI API.
 
@@ -3646,6 +3735,7 @@ class NovelAIWebPlugin(star.Star):
             uc_preset_override: Fixed UC preset integer, or ``None`` to use config.
             use_coords: Whether character slots lock to regional coordinates.
             slot_centers: Per-slot x coordinates, or ``None`` for centered slots.
+            apply_nsfw: Whether to prepend the global ``nsfw`` token.
 
         Returns:
             Path to the verified generated image.
@@ -3653,7 +3743,7 @@ class NovelAIWebPlugin(star.Star):
         Raises:
             NovelAIWebError: If a guard, authentication, network, or response fails.
         """
-        prompt = self._apply_global_nsfw_prompt(prompt)
+        prompt = self._apply_global_nsfw_prompt(prompt, apply_nsfw)
         image_model = self._normalize_image_model(image_model)
         try:
             width, height = self._validate_generation_size(*generation_size)

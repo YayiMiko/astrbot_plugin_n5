@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.4.1 - 2026-09-08
+
+- Add per-user `/n5 nsfw [开|关]` switch for the global NSFW direction; `rating:` tags are still stripped when disabled. The switch is stored per QQ, defaults to on, and is shown in `/n5 状态`.
+- Open generation to everyone when `allowed_sender_ids` is empty; a non-empty list still restricts usage. Bug-report admin notices no longer fall back to the sender whitelist.
+- Default `allow_group` to true so group chats work without configuration.
+
 ## 0.4.0 - 2026-09-08
 
 - Add `/n5 漫画` multi-panel comic generation: storyboard planning (1-4 panels, refused above the cap), skill-based Base/slot assembly, staggered slot coordinates with `use_coords`, per-panel `text` dialogue, fixed Heavy UC preset and scale 7.0.
