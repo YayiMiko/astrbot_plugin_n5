@@ -33,6 +33,10 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 
 本插件的漫画分镜规则来自 B 站和 PIXIV 的某单机游戏爱好者制作的 NAI5 SKILL（`nai5-prompt-expert`），漫画专用系统提示词见 [references/comic-mode.txt](references/comic-mode.txt)。核心约定：Base 只画框（格数、版式、阅读顺序、位置尺寸、景别机位、场景光影），角色/动作/台词全进 Character 槽位；默认从右向左；各槽位 `centers.x` 错开并开 `use_coords`；台词用 `text"…"` 写进该格槽位；版权角色只写 `角色名, girl/boy` 不写固定设定；单页最多 4 格，超出必须拒绝并提示拆页。
 
+## 表情包模式（`/n5 表情包`）
+
+单张方形 Q 版表情：情绪描述正常规划，插件在最终 Prompt 追加 Q 版比例、上半身构图与白底；配字（≤8 字）走 V5 `Text:` 渲染，无配字时用 `no text` 加针对性 Undesired Content；人物一致性沿用人物库槽位与 Vibe 参考。
+
 ## 必守规则
 
 - 以英文逗号分隔标签；优先使用常见、具体、可视化的英文标签。

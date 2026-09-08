@@ -5,12 +5,6 @@
     "default": "",
     "hint": "以 pst- 开头；敏感信息。填写后优先于环境变量生效；留空时回退到 NOVELAI_API_TOKEN 环境变量。"
   },
-  "reference_open_to_all": {
-    "description": "参考图是否对所有人开放",
-    "type": "bool",
-    "default": false,
-    "hint": "参考图走 Vibe 通道，会消耗 Anlas；关闭时仅 AstrBot 管理员可用。"
-  },
   "allowed_sender_ids": {
     "description": "NovelAI 使用者 QQ 白名单",
     "type": "list",

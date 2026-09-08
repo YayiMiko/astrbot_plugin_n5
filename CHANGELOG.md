@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-09-08
+
+- Add `/n5 表情包` sticker mode: locked square canvas with chibi proportions on white background, optional caption (8 chars max) via V5 text rendering, pure-expression mode without caption.
+- Park Vibe reference images: the NAI image API rejects every vibe payload shape on V5 (raw PNG, pre-encoded v4 vibes, singular/plural fields) and `/ai/encode-vibe` only knows v4 models. Quoted and attached images stay planner-side (vision + PNG metadata) with no Anlas cost; the permission gate and `reference_open_to_all` config are removed.
+
 ## 0.5.0 - 2026-09-08
 
 - Add Vibe reference images: quoted or attached images automatically ride the generation as references (up to 16, strengths total within 1.0); admin-only by default with `reference_open_to_all` on the config page, plus Anlas preflight.

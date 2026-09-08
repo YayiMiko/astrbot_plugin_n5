@@ -39,7 +39,6 @@ class FakeEvent:
         self.stopped = False
         self.message = message
         self.sent: list[tuple[str, str]] = []
-        self.admin = False
 
     def get_message_str(self) -> str:
         """Return the configured raw message text."""
@@ -49,10 +48,6 @@ class FakeEvent:
     def get_sender_id() -> str:
         """Return a stable sender identifier."""
         return "10001"
-
-    def is_admin(self) -> bool:
-        """Return whether the sender counts as an administrator."""
-        return self.admin
 
     def should_call_llm(self, call_llm: bool) -> None:
         """Record whether AstrBot may enter its default chat pipeline."""
@@ -296,7 +291,6 @@ async def test_tag_prompt_bypasses_planner_and_success_only_returns_image() -> N
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -327,7 +321,6 @@ async def test_natural_language_still_uses_planner() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -386,7 +379,6 @@ async def test_character_tag_with_chinese_scene_uses_identity_planning() -> None
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -433,7 +425,6 @@ async def test_explicit_raw_character_tag_still_skips_planning() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1043,7 +1034,6 @@ async def test_character_generation_uses_native_captions() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1092,7 +1082,6 @@ async def test_single_nude_character_adds_solo_nsfw_and_duplicate_guards() -> No
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1650,7 +1639,6 @@ async def test_generation_size_keyword_landscape() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1678,7 +1666,6 @@ async def test_generation_size_keyword_square() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1708,7 +1695,6 @@ async def test_generation_size_keyword_ultrawide() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
 
@@ -1919,7 +1905,6 @@ async def test_comic_command_uses_comic_payload() -> None:
         use_coords=True,
         slot_centers=(0.1, 0.3, 0.5),
         apply_nsfw=True,
-        reference_images=(),
     )
     assert results == []
     assert event.sent[0][0] == "image"
@@ -2023,7 +2008,6 @@ async def test_nsfw_safe_mode_applies_safe_rating() -> None:
         use_coords=False,
         slot_centers=None,
         apply_nsfw=False,
-        reference_images=(),
     )
     assert results == []
 
@@ -2046,206 +2030,88 @@ async def test_nsfw_switch_is_persistent_and_user_scoped(
     assert await plugin._user_nsfw_enabled(other_user) is False
 
 
-def test_reference_strengths_total_within_official_guidance() -> None:
-    """Split vibe strength across reference images without exceeding 1.0."""
-    assert MODULE.NovelAIWebPlugin._reference_strengths(1) == [0.6]
-    assert MODULE.NovelAIWebPlugin._reference_strengths(2) == [0.5, 0.5]
-    assert MODULE.NovelAIWebPlugin._reference_strengths(5) == [0.2] * 5
+@pytest.mark.asyncio
+async def test_emote_forces_square_and_chibi_locks() -> None:
+    """Lock emotes to square canvas with chibi style tags."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(FakeEvent(), "表情包 大笑 横图")
+    ]
+
+    assert plugin._plan_prompt.await_args.args[0] == "大笑"
+    plugin._generate_from_api.assert_awaited_once_with(
+        "nsfw, planned prompt, chibi, super deformed, upper body, "
+        "white background, simple background, no text",
+        (1024, 1024),
+        (),
+        "text, captions, speech bubbles, subtitles, watermark, signature",
+        (),
+        image_model=MODULE.NOVELAI_MODEL,
+        scale=5,
+        uc_preset_override=None,
+        use_coords=False,
+        slot_centers=None,
+        apply_nsfw=True,
+    )
+    assert results == []
 
 
 @pytest.mark.asyncio
-async def test_reference_images_require_admin_unless_opened() -> None:
-    """Reject reference images for non-admins while closed to others."""
+async def test_emote_caption_appended_as_text_block() -> None:
+    """Append short captions to the emote prompt text block."""
     plugin = build_plugin()
-    plugin.config["reference_open_to_all"] = False
-    plugin._request_image_context = AsyncMock(
-        return_value=MODULE.RequestImageContext(("ref.png",), "", "quoted"),
-    )
-    plugin._load_reference_image_data = AsyncMock(return_value=[b"image-bytes"])
-    event = FakeEvent()
 
     results = [
-        result async for result in plugin.generate_image(event, "生成 把背景换成雨夜")
+        result
+        async for result in plugin.generate_image(FakeEvent(), "表情包 大笑 配字 哈哈")
     ]
 
-    assert results == [("plain", "参考图功能当前仅对管理员开放。")]
+    assert plugin._plan_prompt.await_args.args[0] == "大笑"
+    prompt = plugin._generate_from_api.await_args.args[0]
+    assert prompt.endswith("\nText: 哈哈")
+    assert "chibi, super deformed" in prompt
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_emote_caption_too_long_returns_usage_error() -> None:
+    """Reject captions longer than the sticker text budget."""
+    plugin = build_plugin()
+
+    results = [
+        result
+        async for result in plugin.generate_image(
+            FakeEvent(), "表情包 大笑 配字 哈哈哈哈哈哈哈哈哈"
+        )
+    ]
+
+    assert results == [("plain", "配字过长，请控制在 8 字以内。")]
     plugin._generate_from_api.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_reference_images_flow_into_vibe_payload_for_admin() -> None:
-    """Attach vibe references when an admin quotes an image."""
+async def test_emote_empty_emotion_returns_usage() -> None:
+    """Reject an emote command without an emotion description."""
     plugin = build_plugin()
-    plugin.config["reference_open_to_all"] = False
-    plugin._request_image_context = AsyncMock(
-        return_value=MODULE.RequestImageContext(("ref.png",), "", "quoted"),
-    )
-    plugin._load_reference_image_data = AsyncMock(return_value=[b"image-bytes"])
-    event = FakeEvent()
-    event.admin = True
 
-    results = [
-        result async for result in plugin.generate_image(event, "生成 把背景换成雨夜")
-    ]
+    results = [result async for result in plugin.generate_image(FakeEvent(), "表情包 ")]
 
-    assert results == []
-    assert plugin._generate_from_api.await_args.kwargs["reference_images"] == (
-        b"image-bytes",
-    )
+    assert results == [("plain", "用法：/n5 表情包 <内容>")]
+    plugin._generate_from_api.assert_not_awaited()
 
 
 @pytest.mark.asyncio
-async def test_reference_images_open_to_all_without_admin() -> None:
-    """Honor the config page switch opening references to everyone."""
+async def test_emote_ascii_input_still_uses_planner() -> None:
+    """Never treat emote input as a direct tag prompt."""
     plugin = build_plugin()
-    plugin.config["reference_open_to_all"] = True
-    plugin._request_image_context = AsyncMock(
-        return_value=MODULE.RequestImageContext(("ref.png",), "", "quoted"),
-    )
-    plugin._load_reference_image_data = AsyncMock(return_value=[b"image-bytes"])
 
     results = [
         result
-        async for result in plugin.generate_image(FakeEvent(), "生成 把背景换成雨夜")
+        async for result in plugin.generate_image(FakeEvent(), "表情包 happy dance")
     ]
 
+    plugin._plan_prompt.assert_awaited_once()
+    assert plugin._plan_prompt.await_args.args[0] == "happy dance"
     assert results == []
-    assert plugin._generate_from_api.await_args.kwargs["reference_images"] == (
-        b"image-bytes",
-    )
-
-
-@pytest.mark.asyncio
-async def test_load_reference_image_data_reads_local_files(
-    tmp_path: Path,
-) -> None:
-    """Read reference bytes from already-downloaded local files."""
-    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
-    first = tmp_path / "first.png"
-    first.write_bytes(b"first-bytes")
-    second = tmp_path / "second.png"
-    second.write_bytes(b"second-bytes")
-
-    assert await plugin._load_reference_image_data((str(first), str(second))) == [
-        b"first-bytes",
-        b"second-bytes",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_vibe_payload_carries_images_strengths_and_extraction() -> None:
-    """Send vibe references with strengths and default extraction."""
-    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
-    plugin.config = {
-        "steps": 23,
-        "max_total_pixels": 1_048_576,
-        "max_steps": 28,
-        "timeout_seconds": 180,
-        "max_response_bytes": 16 * 1024 * 1024,
-        "quality_toggle": False,
-        "uc_preset": 3,
-    }
-    plugin._read_subscription = AsyncMock(
-        return_value={
-            "active": True,
-            "tier": 3,
-            "trainingStepsLeft": {
-                "fixedTrainingStepsLeft": 9000,
-                "purchasedTrainingSteps": 0,
-            },
-        }
-    )
-    plugin._validate_and_save_image = Mock(return_value=Path("generated.png"))
-
-    image_buffer = BytesIO()
-    Image.new("RGB", (832, 1216), "white").save(image_buffer, format="PNG")
-    archive_buffer = BytesIO()
-    with zipfile.ZipFile(archive_buffer, "w") as archive:
-        archive.writestr("image.png", image_buffer.getvalue())
-
-    class FakeResponse:
-        """Expose one successful streamed ZIP response."""
-
-        status_code = 200
-        headers = {"content-type": "application/zip"}
-
-        async def __aenter__(self):
-            """Enter the fake response context."""
-            return self
-
-        async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
-            """Leave the fake response context."""
-
-        async def aiter_bytes(self):
-            """Yield the complete fake ZIP body."""
-            yield archive_buffer.getvalue()
-
-    class CapturingClient:
-        """Capture the outgoing NovelAI payload."""
-
-        def __init__(self) -> None:
-            """Initialize without a captured payload."""
-            self.payload = None
-
-        def stream(self, _method, _endpoint, *, json, **_kwargs):
-            """Capture request JSON and return a fake stream.
-
-            Args:
-                _method: Ignored HTTP method.
-                _endpoint: Ignored API endpoint.
-                json: Request JSON to capture.
-            """
-            self.payload = json
-            return FakeResponse()
-
-    import base64 as base64_module
-
-    client = CapturingClient()
-    plugin._get_api_client = Mock(return_value=client)
-
-    result = await plugin._generate_from_api(
-        "1girl, solo",
-        (832, 1216),
-        reference_images=(b"first-bytes", b"second-bytes"),
-    )
-
-    assert result == Path("generated.png")
-    parameters = client.payload["parameters"]
-    assert parameters["reference_image_multiple"] == [
-        base64_module.b64encode(b"first-bytes").decode("ascii"),
-        base64_module.b64encode(b"second-bytes").decode("ascii"),
-    ]
-    assert parameters["reference_strength_multiple"] == [0.5, 0.5]
-    assert parameters["reference_information_extracted_multiple"] == [1.0, 1.0]
-
-
-@pytest.mark.asyncio
-async def test_vibe_generation_refused_without_anlas_balance() -> None:
-    """Refuse vibe requests when the estimated Anlas cost exceeds balance."""
-    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
-    plugin.config = {
-        "steps": 23,
-        "max_total_pixels": 1_048_576,
-        "max_steps": 28,
-        "timeout_seconds": 180,
-        "max_response_bytes": 16 * 1024 * 1024,
-        "quality_toggle": False,
-        "uc_preset": 3,
-    }
-    plugin._read_subscription = AsyncMock(
-        return_value={
-            "active": True,
-            "tier": 3,
-            "trainingStepsLeft": {
-                "fixedTrainingStepsLeft": 0,
-                "purchasedTrainingSteps": 0,
-            },
-        }
-    )
-
-    with pytest.raises(MODULE.NovelAIWebError, match="Anlas 余额不足"):
-        await plugin._generate_from_api(
-            "1girl, solo",
-            (832, 1216),
-            reference_images=(b"first-bytes",),
-        )
