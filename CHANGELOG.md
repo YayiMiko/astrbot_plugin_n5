@@ -1,8 +1,9 @@
 # Changelog
 
-## 0.4.1 - 2026-09-08
+## 0.4.2 - 2026-09-08
 
-- Add per-user `/n5 nsfw [开|关]` switch for the global NSFW direction; `rating:` tags are still stripped when disabled. The switch is stored per QQ, defaults to on, and is shown in `/n5 状态`.
+- Replace the NSFW off state with safe mode (`rating:safe`) and make safe the default; `/n5 nsfw` now switches between 开 and safe.
+- Add per-user `/n5 nsfw` switch for the content direction; `rating:` tags are still stripped in either mode. The switch is stored per QQ and shown in `/n5 状态`.
 - Open generation to everyone when `allowed_sender_ids` is empty; a non-empty list still restricts usage. Bug-report admin notices no longer fall back to the sender whitelist.
 - Default `allow_group` to true so group chats work without configuration.
 - Fix comic delivery: collapse duplicate identities in one panel, and drop the storyboard text so comic requests only send the image.

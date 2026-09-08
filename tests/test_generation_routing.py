@@ -1947,14 +1947,19 @@ async def test_comic_size_suffix_applies_to_request() -> None:
 
 @pytest.mark.asyncio
 async def test_nsfw_command_toggles_switch() -> None:
-    """Flip the NSFW switch when no explicit selection is given."""
+    """Flip between NSFW and safe mode when no selection is given."""
     plugin = build_plugin()
     plugin._user_nsfw_enabled = AsyncMock(side_effect=[True, False, False, True])
     event = FakeEvent()
 
     results = [result async for result in plugin.generate_image(event, "nsfw")]
 
-    assert results == [("plain", "你的 NSFW 已关闭。生图时不再加入 nsfw 方向词。")]
+    assert results == [
+        (
+            "plain",
+            "你的 NSFW 已关闭（safe 安全模式）。生图时改用 rating:safe，不再加入 nsfw。",
+        )
+    ]
     results = [result async for result in plugin.generate_image(event, "nsfw")]
 
     assert results == [("plain", "你的 NSFW 已开启。生图时会自动加入 nsfw 方向词。")]
@@ -1967,15 +1972,20 @@ async def test_nsfw_command_explicit_on_off() -> None:
     plugin._user_nsfw_enabled = AsyncMock(return_value=False)
     event = FakeEvent()
 
-    results = [result async for result in plugin.generate_image(event, "nsfw 关")]
+    results = [result async for result in plugin.generate_image(event, "nsfw safe")]
 
-    plugin._user_nsfw_enabled.assert_awaited_once_with(event, "关")
-    assert results == [("plain", "你的 NSFW 已关闭。生图时不再加入 nsfw 方向词。")]
+    plugin._user_nsfw_enabled.assert_awaited_once_with(event, "safe")
+    assert results == [
+        (
+            "plain",
+            "你的 NSFW 已关闭（safe 安全模式）。生图时改用 rating:safe，不再加入 nsfw。",
+        )
+    ]
 
 
 @pytest.mark.asyncio
-async def test_nsfw_disabled_skips_token_but_strips_rating() -> None:
-    """Skip the nsfw token while still removing rating tags."""
+async def test_nsfw_safe_mode_applies_safe_rating() -> None:
+    """Apply rating:safe while still removing user-supplied rating tags."""
     plugin = build_plugin()
     plugin._user_nsfw_enabled = AsyncMock(return_value=False)
 
@@ -1987,7 +1997,7 @@ async def test_nsfw_disabled_skips_token_but_strips_rating() -> None:
     ]
 
     plugin._generate_from_api.assert_awaited_once_with(
-        "1girl",
+        "rating:safe, 1girl",
         (832, 1216),
         (),
         "",
@@ -2014,7 +2024,7 @@ async def test_nsfw_switch_is_persistent_and_user_scoped(
     first_user = CharacterEvent()
     other_user = CharacterEvent(sender_id="10002")
 
-    assert await plugin._user_nsfw_enabled(first_user) is True
-    assert await plugin._user_nsfw_enabled(first_user, "关") is False
     assert await plugin._user_nsfw_enabled(first_user) is False
-    assert await plugin._user_nsfw_enabled(other_user) is True
+    assert await plugin._user_nsfw_enabled(first_user, "开") is True
+    assert await plugin._user_nsfw_enabled(first_user) is True
+    assert await plugin._user_nsfw_enabled(other_user) is False

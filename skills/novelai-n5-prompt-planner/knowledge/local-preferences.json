@@ -25,7 +25,7 @@
     {
       "id": "global-nsfw-direction",
       "enforcement": "llm",
-      "instruction": "Assume the literal nsfw token is applied globally as a broad semantic direction. Use the model's own learned concept and add only request-relevant detail when useful; do not require a fixed anatomy pack and do not emit any rating: tag."
+      "instruction": "Assume the rating:safe token is applied globally as the default content direction. Only when the request explicitly enables NSFW is the literal nsfw token applied instead. Use the model's own learned concept and add only request-relevant detail when useful; do not require a fixed anatomy pack and do not emit any rating: tag."
     }
   ]
 }
