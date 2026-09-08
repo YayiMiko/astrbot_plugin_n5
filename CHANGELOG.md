@@ -1,6 +1,8 @@
 # Changelog
 
-## 0.5.1 - 2026-09-08
+## 0.5.2 - 2026-09-08
+
+- Document that img2img and Vibe reference images are currently unsupported; attached and quoted images only feed prompt planning at no Anlas cost.
 
 - Add `/n5 表情包` sticker mode: locked square canvas with chibi proportions on white background, optional caption (8 chars max) via V5 text rendering, pure-expression mode without caption.
 - Park Vibe reference images: the NAI image API rejects every vibe payload shape on V5 (raw PNG, pre-encoded v4 vibes, singular/plural fields) and `/ai/encode-vibe` only knows v4 models. Quoted and attached images stay planner-side (vision + PNG metadata) with no Anlas cost; the permission gate and `reference_open_to_all` config are removed.
