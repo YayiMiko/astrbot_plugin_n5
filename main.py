@@ -26,6 +26,7 @@ from astrbot.api import AstrBotConfig, logger, star
 from astrbot.api.event import AstrMessageEvent, filter
 from astrbot.api.event.filter import EventMessageType
 from astrbot.core.star.filter.command import GreedyStr
+from astrbot.core.utils.media_utils import MediaResolver
 
 try:
     from .identity_planner import identity_alias_key, plan_identities
@@ -158,6 +159,14 @@ REQUEST_SIZE_KEYWORDS = {
 # Isolated here because the exact NAI rating name is unconfirmed; change this
 # single constant if the authoritative safe rating differs.
 SAFE_MODE_TOKEN = "rating:safe"
+# Reference images (Vibe Transfer) follow official limits: at most 16 images
+# per request. Strength defaults follow the official guidance that vibe
+# strengths should total 1.0 or less.
+REFERENCE_MAX_IMAGES = 16
+REFERENCE_SINGLE_STRENGTH = 0.6
+REFERENCE_DOUBLE_STRENGTH = 0.5
+REFERENCE_INFO_EXTRACTED = 1.0
+REFERENCE_MAX_BYTES = 10 * 1024 * 1024
 # NovelAI API ucPreset integers: Heavy=0, Light=1, FurryFocus=2, HumanFocus=3,
 # None=4. Comic pages always use the Heavy preset per the comic skill.
 COMIC_UC_PRESET_HEAVY = 0
@@ -302,7 +311,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.4.2",
+    "0.5.0",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -431,7 +440,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.4.2",
+                    "User-Agent": "AstrBot-N5/0.5.0",
                 },
                 follow_redirects=False,
             )
@@ -512,6 +521,7 @@ class NovelAIWebPlugin(star.Star):
             [
                 "NovelAI N5 指令",
                 "/n5 生成 <内容> - 自然语言扩写；附图时使用 DS4F Vision 参考",
+                "  附图自动作为 Vibe 参考图（消耗 Anlas，默认仅管理员可用）",
                 "  尾缀 横图/方图/超宽屏 指定本次尺寸，默认 832x1216 竖图",
                 "/n5 漫画 <剧情> - 规划并生成多格漫画页（最多 4 格）",
                 "/n5 nsfw [开|safe] - 查看或切换 NSFW/safe，不带参数时取反",
@@ -2132,6 +2142,75 @@ class NovelAIWebPlugin(star.Star):
             logger.warning("[n5] image context resolution failed: %s", exc)
             return RequestImageContext((), "", "")
 
+    def _check_reference_access(self, event: AstrMessageEvent) -> None:
+        """Restrict Anlas-costly reference images to admins unless opened.
+
+        Args:
+            event: Message event that attached or quoted reference images.
+
+        Raises:
+            NovelAIWebError: If reference images are not open to this sender.
+        """
+        if bool(self.config.get("reference_open_to_all", False)):
+            return
+        if event.is_admin():
+            return
+        raise NovelAIWebError("参考图功能当前仅对管理员开放。")
+
+    @staticmethod
+    def _reference_strengths(count: int) -> list[float]:
+        """Split vibe strength across reference images.
+
+        Args:
+            count: Number of reference images in this request.
+
+        Returns:
+            One strength per image, totaling 1.0 or less per official guidance.
+        """
+        if count <= 1:
+            return [REFERENCE_SINGLE_STRENGTH]
+        if count == 2:
+            return [REFERENCE_DOUBLE_STRENGTH, REFERENCE_DOUBLE_STRENGTH]
+        return [round(1.0 / count, 3)] * count
+
+    @staticmethod
+    async def _load_reference_image_data(
+        image_refs: tuple[str, ...],
+    ) -> list[bytes]:
+        """Download reference images into raw bytes for the Vibe payload.
+
+        Args:
+            image_refs: Request-local image paths or URLs, best first.
+
+        Returns:
+            Raw image bytes in request order.
+
+        Raises:
+            NovelAIWebError: If no usable reference image is available.
+        """
+        image_data: list[bytes] = []
+        for image_ref in image_refs[:REFERENCE_MAX_IMAGES]:
+            local_path = image_ref
+            if not Path(local_path).is_file():
+                try:
+                    local_path = await MediaResolver(
+                        image_ref,
+                        media_type="image",
+                        default_suffix=".png",
+                    ).to_path()
+                except (AttributeError, OSError, ValueError) as exc:
+                    raise NovelAIWebError("参考图下载失败。") from exc
+            try:
+                raw_data = Path(local_path).read_bytes()
+            except OSError as exc:
+                raise NovelAIWebError("参考图读取失败。") from exc
+            if len(raw_data) > REFERENCE_MAX_BYTES:
+                raise NovelAIWebError("参考图文件过大。")
+            image_data.append(raw_data)
+        if not image_data:
+            raise NovelAIWebError("没有可用的参考图。")
+        return image_data
+
     async def _resolve_planned_character_slots(
         self,
         event: AstrMessageEvent,
@@ -3580,6 +3659,12 @@ class NovelAIWebPlugin(star.Star):
                     "当前画师串与人物 Prompt 已占满 Prompt 长度上限。"
                 )
             negative_prompt = DEFAULT_NEGATIVE_PROMPT
+            reference_images: tuple[bytes, ...] = ()
+            if image_context.image_urls:
+                self._check_reference_access(event)
+                reference_images = tuple(
+                    await self._load_reference_image_data(image_context.image_urls)
+                )
         except NovelAIWebError as exc:
             yield event.plain_result(str(exc))
             return
@@ -3691,6 +3776,7 @@ class NovelAIWebPlugin(star.Star):
                         use_coords=comic_mode,
                         slot_centers=slot_centers,
                         apply_nsfw=nsfw_enabled,
+                        reference_images=reference_images,
                     )
             except NovelAIWebError as exc:
                 yield event.plain_result(f"生成失败：{exc}")
@@ -3725,6 +3811,7 @@ class NovelAIWebPlugin(star.Star):
         use_coords: bool = False,
         slot_centers: tuple[float, ...] | None = None,
         apply_nsfw: bool = True,
+        reference_images: tuple[bytes, ...] = (),
     ) -> Path:
         """Submit one guarded free-generation request to the NovelAI API.
 
@@ -3740,6 +3827,7 @@ class NovelAIWebPlugin(star.Star):
             use_coords: Whether character slots lock to regional coordinates.
             slot_centers: Per-slot x coordinates, or ``None`` for centered slots.
             apply_nsfw: Whether to prepend the global ``nsfw`` token.
+            reference_images: Raw Vibe reference images, best first.
 
         Returns:
             Path to the verified generated image.
@@ -3787,6 +3875,21 @@ class NovelAIWebPlugin(star.Star):
             or int(subscription.get("tier", 0)) != 3
         ):
             raise NovelAIWebError("已拒绝请求：当前账号不是有效的 NovelAI Opus。")
+
+        reference_images = tuple(reference_images[:REFERENCE_MAX_IMAGES])
+        if reference_images:
+            training_steps = subscription.get("trainingStepsLeft", {})
+            fixed_steps = training_steps.get("fixedTrainingStepsLeft", 0)
+            purchased_steps = training_steps.get("purchasedTrainingSteps", 0)
+            if isinstance(fixed_steps, int) and isinstance(purchased_steps, int):
+                vibe_count = len(reference_images)
+                estimated_cost = 2 * vibe_count
+                if vibe_count > 4:
+                    estimated_cost += 2 * (vibe_count - 4)
+                if fixed_steps + purchased_steps < estimated_cost:
+                    raise NovelAIWebError(
+                        f"Anlas 余额不足，参考图本次预计需要约 {estimated_cost} Anlas。"
+                    )
 
         negative_prompt = self._normalize_negative_prompt(negative_prompt)
         if len(character_prompts) > 22:
@@ -3853,6 +3956,16 @@ class NovelAIWebPlugin(star.Star):
                 "use_coords": False,
                 "legacy_uc": False,
                 "normalize_reference_strength_multiple": True,
+                "reference_image_multiple": [
+                    base64.b64encode(raw_data).decode("ascii")
+                    for raw_data in reference_images
+                ],
+                "reference_information_extracted_multiple": (
+                    [REFERENCE_INFO_EXTRACTED] * len(reference_images)
+                ),
+                "reference_strength_multiple": self._reference_strengths(
+                    len(reference_images)
+                ),
                 "inpaintImg2ImgStrength": 1,
                 "seed": seed,
                 "extra_noise_seed": seed,

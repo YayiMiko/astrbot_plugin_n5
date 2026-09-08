@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.5.0 - 2026-09-08
+
+- Add Vibe reference images: quoted or attached images automatically ride the generation as references (up to 16, strengths total within 1.0); admin-only by default with `reference_open_to_all` on the config page, plus Anlas preflight.
+
 ## 0.4.2 - 2026-09-08
 
 - Replace the NSFW off state with safe mode (`rating:safe`) and make safe the default; `/n5 nsfw` now switches between 开 and safe.
