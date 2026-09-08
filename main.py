@@ -172,6 +172,14 @@ EMOTE_MAX_CAPTION_CHARS = 8
 # Isolated here because the exact NAI rating name is unconfirmed; change this
 # single constant if the authoritative safe rating differs.
 SAFE_MODE_TOKEN = "rating:safe"
+# Forced negative pack for non-whitelisted group chats. Kept minimal so
+# swimwear and suggestive (but non-explicit) generations still work.
+SAFE_MODE_NEGATIVES = (
+    "nude",
+    "naked",
+    "sex",
+    "explicit",
+)
 # NovelAI API ucPreset integers: Heavy=0, Light=1, FurryFocus=2, HumanFocus=3,
 # None=4. Comic pages always use the Heavy preset per the comic skill.
 COMIC_UC_PRESET_HEAVY = 0
@@ -316,7 +324,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.5.2",
+    "0.5.3",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -445,7 +453,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.5.2",
+                    "User-Agent": "AstrBot-N5/0.5.3",
                 },
                 follow_redirects=False,
             )
@@ -518,6 +526,29 @@ class NovelAIWebPlugin(star.Star):
         )
         if allowed_group_ids and group_id not in allowed_group_ids:
             raise NovelAIWebError("当前群不在 NovelAI 群白名单中。")
+
+    def _group_is_nsfw_restricted(self, event: AstrMessageEvent) -> bool:
+        """Return whether this conversation uses the restrictive safe profile.
+
+        Private chats and groups listed in ``nsfw_group_ids`` are unrestricted
+        (user nsfw toggle and model choice apply). Every other group chat is
+        forced to safe mode, V5 Curated, and the safe negative pack.
+        """
+        if event.is_private_chat():
+            return False
+        group_id = str(event.get_group_id()).strip()
+        nsfw_groups = self._normalize_id_list(self.config.get("nsfw_group_ids", []))
+        return group_id not in nsfw_groups
+
+    @staticmethod
+    def _with_safe_negatives(negative_prompt: str) -> str:
+        """Merge the safe negative pack into a base negative prompt."""
+        items = [item.strip() for item in negative_prompt.split(",") if item.strip()]
+        present = {item.casefold() for item in items}
+        items.extend(
+            item for item in SAFE_MODE_NEGATIVES if item.casefold() not in present
+        )
+        return ", ".join(items)
 
     @staticmethod
     def _help_text() -> str:
@@ -1151,35 +1182,29 @@ class NovelAIWebPlugin(star.Star):
         self,
         storyboard: ComicStoryboard,
         replacements: list[tuple[str, str, str, str]],
+        max_length: int,
+        explicit_nudity: bool = False,
     ) -> tuple[str, list[str], str]:
         """Translate a validated storyboard into NovelAI prompts.
 
-        Character slots keep only ``identity, subject`` plus per-panel state,
-        following the comic skill; saved fixed appearances are not injected.
+        Saved library characters keep their fixed identity through the shared
+        character builder, combined with per-panel state from the storyboard.
+        Unlisted characters use the planner-provided identity directly.
 
         Args:
             storyboard: Validated reading order and panels.
-            replacements: Slot, character name, and saved prompt tuples used only
-                to derive a fallback subject word.
+            replacements: Slot, character name, and saved prompt tuples.
+            max_length: Maximum combined character prompt length.
+            explicit_nudity: Whether explicit user intent overrides garments.
 
         Returns:
             Base prompt, per-slot captions in panel order, and a readable
             storyboard summary for chat delivery.
         """
-        saved_subject: dict[str, str] = {}
-        for slot, _, saved_prompt, _ in replacements:
-            if re.search(
-                r"(?i)(?<![a-z0-9_])(?:girl|1girl|woman|female|loli)(?![a-z0-9_])",
-                saved_prompt,
-            ):
-                saved_subject[slot] = "girl"
-            elif re.search(
-                r"(?i)(?<![a-z0-9_])(?:boy|1boy|man|male|shota)(?![a-z0-9_])",
-                saved_prompt,
-            ):
-                saved_subject[slot] = "boy"
-            else:
-                saved_subject[slot] = "other"
+        saved_entry: dict[str, tuple[str, str, str, str]] = {
+            slot: (slot, name, content, negative)
+            for slot, name, content, negative in replacements
+        }
 
         base_parts = [
             (
@@ -1212,26 +1237,39 @@ class NovelAIWebPlugin(star.Star):
                     f'speech bubble, rectangular narration box, text"{narration}"'
                 )
             panel_cast: list[str] = []
-            seen_in_panel: set[tuple[str, str]] = set()
+            seen_in_panel: set[str] = set()
             for character in panel["characters"]:
-                identity = character["identity"]
-                dedupe_key = (character["slot"], identity.casefold())
+                slot = character["slot"]
+                dedupe_key = (
+                    f"slot:{slot}" if slot else f"anon:{character['identity']}"
+                ).casefold()
                 if dedupe_key in seen_in_panel:
                     continue
                 seen_in_panel.add(dedupe_key)
-                if not re.search(
-                    r"(?i)(?<![a-z0-9_])(?:girl|boy|other)(?![a-z0-9_])",
-                    identity,
-                ):
-                    identity += f", {saved_subject.get(character['slot'], 'other')}"
-                caption = identity
-                if character["state"]:
-                    caption += f", {character['state']}"
+                if slot and slot in saved_entry:
+                    (caption,) = self._build_character_prompts(
+                        [saved_entry[slot]],
+                        {slot: character["state"]},
+                        max_length,
+                        explicit_nudity,
+                    )
+                    display_name = saved_entry[slot][1]
+                else:
+                    identity = character["identity"]
+                    if not re.search(
+                        r"(?i)(?<![a-z0-9_])(?:girl|boy|other)(?![a-z0-9_])",
+                        identity,
+                    ):
+                        identity += ", other"
+                    caption = identity
+                    if character["state"]:
+                        caption += f", {character['state']}"
+                    display_name = identity
                 if character["dialogue"]:
                     dialogue = character["dialogue"].replace('"', "“")
                     caption += f', speech bubble, text"{dialogue}"'
                 slot_captions.append(caption)
-                panel_cast.append(identity)
+                panel_cast.append(display_name)
             summary = f"第 {panel['panel']} 格（{panel['placement']}）"
             if panel_cast:
                 summary += "：" + "、".join(panel_cast)
@@ -1916,7 +1954,7 @@ class NovelAIWebPlugin(star.Star):
         event: AstrMessageEvent,
         name: str,
     ) -> str:
-        """Stage one existing user-scoped character for deletion.
+        """Stage one existing shared-pool character for deletion.
 
         Args:
             event: Message event identifying the requesting QQ user.
@@ -2036,12 +2074,17 @@ class NovelAIWebPlugin(star.Star):
             prompts = library["prompts"] if library is not None else {}
             if not normalized_name:
                 names = sorted(prompts)
+                usage = (
+                    "添加：/n5 创建人物 <角色名> <Prompt> [--负面 <内容>]\n"
+                    "删除：/n5 删除人物 <角色名>，60 秒内 /n5 确认"
+                )
                 if not names:
-                    return "你还没有保存全局人物。"
-                lines = [f"你的全局人物（共 {len(names)} 个）"]
+                    return f"还没有保存全局人物。\n{usage}"
+                lines = [f"全局人物（共 {len(names)} 个）"]
                 lines.extend(f"- {item}" for item in names[:50])
                 if len(names) > 50:
                     lines.append(f"另有 {len(names) - 50} 个未显示。")
+                lines.append(usage)
                 return "\n".join(lines)
 
             normalized_name = self._validate_character_name(normalized_name)
@@ -2055,7 +2098,7 @@ class NovelAIWebPlugin(star.Star):
             )
             content = prompts.get(canonical_name)
             if content is None:
-                raise NovelAIWebError(f"你的全局人物中不存在「{normalized_name}」。")
+                raise NovelAIWebError(f"全局人物中不存在「{normalized_name}」。")
             negative_content = library["negative_prompts"].get(canonical_name, "")
             return (
                 f"人物「{canonical_name}」\n"
@@ -2462,8 +2505,8 @@ class NovelAIWebPlugin(star.Star):
         return f"group:{group_id}"
 
     def _character_library_key(self, event: AstrMessageEvent) -> str:
-        """Return one user-scoped character library shared across all chats."""
-        return f"private:{self._artist_owner_id(event)}"
+        """Return the shared character pool used in every conversation."""
+        return "shared"
 
     @staticmethod
     def _new_user_state() -> ArtistUserState:
@@ -2986,6 +3029,11 @@ class NovelAIWebPlugin(star.Star):
             lines.append(f"- {name}{marker}")
         if len(names) > 50:
             lines.append(f"另有 {len(names) - 50} 个未显示。")
+        lines.append(
+            "添加：/n5 添加画师串 <名称> <内容>\n"
+            "切换：/n5 切换画师串 <名称|默认|原生>\n"
+            "查看：/n5 查看画师串 <名称>"
+        )
         return "\n".join(lines)
 
     async def _artist_string_detail_text(
@@ -3216,6 +3264,16 @@ class NovelAIWebPlugin(star.Star):
             width, height = DEFAULT_GENERATION_SIZE
             image_model = await self._user_image_model(event)
             nsfw_enabled = await self._user_nsfw_enabled(event)
+            safe_restricted = self._group_is_nsfw_restricted(event)
+            if event.is_private_chat():
+                policy_label = "私聊（个人设置）"
+            elif safe_restricted:
+                policy_label = "默认安全组"
+            else:
+                policy_label = "开放组"
+            if safe_restricted:
+                nsfw_enabled = False
+                image_model = NOVELAI_MODELS["v5c"]
             selected_artist = await self._active_artist_string(event)
             async with self._generation_queue_lock:
                 queue_total = self._generation_queue_size
@@ -3275,6 +3333,7 @@ class NovelAIWebPlugin(star.Star):
             f"绘图模型: {NOVELAI_MODEL_LABELS[image_model]}\n"
             f"当前画风: {selected_artist[0] if selected_artist else '原生'}\n"
             f"NSFW: {'开' if nsfw_enabled else 'safe'}\n"
+            f"群策略: {policy_label}\n"
             f"尺寸: {width}x{height}\n"
             f"Steps: {steps}\n"
             f"免费参数保护: {'通过' if free_eligible else '不通过'}"
@@ -3477,7 +3536,7 @@ class NovelAIWebPlugin(star.Star):
                 yield event.plain_result(str(exc))
                 return
             yield event.plain_result(
-                f"这会删除你的全局人物「{canonical_name}」，确定吗？"
+                f"这会删除全局人物「{canonical_name}」，确定吗？"
                 "请在 60 秒内发送 /n5 确认。"
             )
             return
@@ -3578,6 +3637,10 @@ class NovelAIWebPlugin(star.Star):
             image_context = await self._request_image_context(event)
             image_model = await self._user_image_model(event)
             nsfw_enabled = await self._user_nsfw_enabled(event)
+            safe_restricted = self._group_is_nsfw_restricted(event)
+            if safe_restricted:
+                nsfw_enabled = False
+                image_model = NOVELAI_MODELS["v5c"]
             selected_artist = await self._active_artist_string(event)
             artist_prefix_length = 0
             if selected_artist is not None:
@@ -3633,6 +3696,8 @@ class NovelAIWebPlugin(star.Star):
                         prompt_text, comic_captions, _ = self._build_comic_prompts(
                             storyboard,
                             character_replacements,
+                            max_prompt_length,
+                            explicit_nudity,
                         )
                         character_prompts = tuple(comic_captions)
                         slot_centers: tuple[float, ...] | None = tuple(
@@ -3723,6 +3788,8 @@ class NovelAIWebPlugin(star.Star):
                             negative_prompt = ", ".join(negative_items)
                     if selected_artist is not None:
                         prompt_text = f"{artist_content}, {prompt_text}"
+                    if safe_restricted:
+                        negative_prompt = self._with_safe_negatives(negative_prompt)
                     prompt_text = self._apply_global_nsfw_prompt(
                         prompt_text, nsfw_enabled
                     )

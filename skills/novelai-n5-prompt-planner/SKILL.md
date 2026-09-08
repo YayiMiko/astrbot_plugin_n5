@@ -31,7 +31,7 @@ description: 将中文或英文画面描述规划为适合 NovelAI Diffusion V5 
 
 ## 漫画模式（`/n5 漫画`）
 
-本插件的漫画分镜规则来自 B 站和 PIXIV 的某单机游戏爱好者制作的 NAI5 SKILL（`nai5-prompt-expert`），漫画专用系统提示词见 [references/comic-mode.txt](references/comic-mode.txt)。核心约定：Base 只画框（格数、版式、阅读顺序、位置尺寸、景别机位、场景光影），角色/动作/台词全进 Character 槽位；默认从右向左；各槽位 `centers.x` 错开并开 `use_coords`；台词用 `text"…"` 写进该格槽位；版权角色只写 `角色名, girl/boy` 不写固定设定；单页最多 4 格，超出必须拒绝并提示拆页。
+本插件的漫画分镜规则来自 B 站和 PIXIV 的某单机游戏爱好者制作的 NAI5 SKILL（`nai5-prompt-expert`），漫画专用系统提示词见 [references/comic-mode.txt](references/comic-mode.txt)。核心约定：Base 只画框（格数、版式、阅读顺序、位置尺寸、景别机位、场景光影），角色/动作/台词全进 Character 槽位；默认从右向左；各槽位 `centers.x` 错开并开 `use_coords`；台词用 `text"…"` 写进该格槽位；人物库命中的角色沿用存档固定身份（规划器只补本格状态），未收录角色用规划器身份；单页最多 4 格，超出必须拒绝并提示拆页。
 
 ## 表情包模式（`/n5 表情包`）
 

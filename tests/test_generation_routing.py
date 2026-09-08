@@ -39,6 +39,8 @@ class FakeEvent:
         self.stopped = False
         self.message = message
         self.sent: list[tuple[str, str]] = []
+        self.private = True
+        self.group_id = "20001"
 
     def get_message_str(self) -> str:
         """Return the configured raw message text."""
@@ -48,6 +50,14 @@ class FakeEvent:
     def get_sender_id() -> str:
         """Return a stable sender identifier."""
         return "10001"
+
+    def is_private_chat(self) -> bool:
+        """Return whether the event represents a private chat."""
+        return self.private
+
+    def get_group_id(self) -> str:
+        """Return the configured group identifier."""
+        return self.group_id
 
     def should_call_llm(self, call_llm: bool) -> None:
         """Record whether AstrBot may enter its default chat pipeline."""
@@ -1235,9 +1245,7 @@ async def test_character_delete_requires_same_user_confirmation(tmp_path: Path) 
     plugin._save_character_state(
         {
             "version": 1,
-            "libraries": {
-                "private:10001": {"prompts": {"撅撅": "cum, sex, steam, wet"}}
-            },
+            "libraries": {"shared": {"prompts": {"撅撅": "cum, sex, steam, wet"}}},
         }
     )
     requester = CharacterEvent()
@@ -1246,17 +1254,14 @@ async def test_character_delete_requires_same_user_confirmation(tmp_path: Path) 
     staged_name = await plugin._stage_character_deletion(requester, "撅撅")
 
     assert staged_name == "撅撅"
-    assert (
-        "撅撅"
-        in plugin._load_character_state()["libraries"]["private:10001"]["prompts"]
-    )
+    assert "撅撅" in plugin._load_character_state()["libraries"]["shared"]["prompts"]
     with pytest.raises(MODULE.NovelAIWebError, match="没有待确认"):
         await plugin._confirm_character_change(other_user)
 
     operation, deleted_name = await plugin._confirm_character_change(requester)
 
     assert (operation, deleted_name) == ("delete", "撅撅")
-    assert plugin._load_character_state()["libraries"]["private:10001"]["prompts"] == {}
+    assert plugin._load_character_state()["libraries"]["shared"]["prompts"] == {}
 
 
 @pytest.mark.asyncio
@@ -1270,24 +1275,19 @@ async def test_character_delete_confirmation_expires(tmp_path: Path) -> None:
     plugin._save_character_state(
         {
             "version": 1,
-            "libraries": {
-                "private:10001": {"prompts": {"撅撅": "cum, sex, steam, wet"}}
-            },
+            "libraries": {"shared": {"prompts": {"撅撅": "cum, sex, steam, wet"}}},
         }
     )
     event = CharacterEvent()
     await plugin._stage_character_deletion(event, "撅撅")
-    plugin._pending_character_changes[("private:10001", "10001")]["expires_at"] = (
+    plugin._pending_character_changes[("shared", "10001")]["expires_at"] = (
         MODULE.monotonic() - 1
     )
 
     with pytest.raises(MODULE.NovelAIWebError, match="已超时"):
         await plugin._confirm_character_change(event)
 
-    assert (
-        "撅撅"
-        in plugin._load_character_state()["libraries"]["private:10001"]["prompts"]
-    )
+    assert "撅撅" in plugin._load_character_state()["libraries"]["shared"]["prompts"]
 
 
 @pytest.mark.asyncio
@@ -1364,8 +1364,8 @@ async def test_character_negative_prompt_is_saved_and_resolved(tmp_path: Path) -
 
 
 @pytest.mark.asyncio
-async def test_private_character_is_available_in_every_group(tmp_path: Path) -> None:
-    """Share one user's saved character library across private and group chats."""
+async def test_shared_character_pool_across_groups_and_private(tmp_path: Path) -> None:
+    """Share one character pool across groups and private chats."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "max_character_prompt_length": 2000,
@@ -1375,8 +1375,8 @@ async def test_private_character_is_available_in_every_group(tmp_path: Path) -> 
     plugin._pending_character_changes = {}
     plugin._character_state_path = Mock(return_value=tmp_path / "characters.json")
     private_event = AccessEvent(sender_id="10001", private=True)
-    first_group = CharacterEvent(sender_id="10001", group_id="20001")
-    second_group = CharacterEvent(sender_id="10001", group_id="20002")
+    first_group = CharacterEvent(sender_id="10002", group_id="20001")
+    second_group = CharacterEvent(sender_id="10003", group_id="20002")
 
     await plugin._add_character(
         private_event,
@@ -1785,14 +1785,14 @@ def test_comic_storyboard_parser_rejects_too_many_panels() -> None:
         MODULE.NovelAIWebPlugin._parse_comic_storyboard_response(raw, ())
 
 
-def test_comic_build_skips_saved_appearance() -> None:
-    """Keep only identity plus panel state, never saved fixed appearance."""
+def test_comic_build_uses_saved_identity_for_slots() -> None:
+    """Inject saved fixed appearance for library characters in comics."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     replacements = [
         (
             "__NAI_CHARACTER_SLOT_1__",
             "芙宁娜",
-            "furina (genshin impact), blue eyes, long hair, blue dress",
+            "furina (genshin impact), girl, blue eyes, long hair, blue dress",
             "",
         )
     ]
@@ -1818,13 +1818,17 @@ def test_comic_build_skips_saved_appearance() -> None:
         ],
     }
 
-    base, captions, summary = plugin._build_comic_prompts(storyboard, replacements)
+    base, captions, summary = plugin._build_comic_prompts(
+        storyboard, replacements, 4000
+    )
 
     assert "1-panel manga page" in base
-    assert captions == ["furina (genshin impact), girl, holding umbrella"]
-    assert "blue eyes" not in captions[0]
-    assert "long hair" not in captions[0]
+    assert captions == [
+        "furina (genshin impact), girl, blue eyes, long hair, blue dress, "
+        "holding umbrella"
+    ]
     assert "第 1 格" in summary
+    assert "芙宁娜" in summary
 
 
 def test_comic_build_dedupes_repeated_identity_in_panel() -> None:
@@ -1851,11 +1855,109 @@ def test_comic_build_dedupes_repeated_identity_in_panel() -> None:
         ],
     }
 
-    base, captions, summary = plugin._build_comic_prompts(storyboard, [])
+    base, captions, summary = plugin._build_comic_prompts(storyboard, [], 4000)
 
     assert captions == ["cartethyia (wuthering waves), girl, waking up"]
     assert summary.count("cartethyia (wuthering waves), girl") == 1
     assert "1-panel manga page" in base
+
+
+def test_comic_build_dedupes_same_slot_twice_in_panel() -> None:
+    """Collapse one library character repeated in a single panel."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "狐莉",
+            "girl, white hair, fox ears",
+            "",
+        )
+    ]
+    first = {
+        "slot": "__NAI_CHARACTER_SLOT_1__",
+        "identity": "anything, girl",
+        "state": "waking up",
+        "dialogue": "",
+    }
+    second = {
+        "slot": "__NAI_CHARACTER_SLOT_1__",
+        "identity": "different text, girl",
+        "state": "stretching",
+        "dialogue": "",
+    }
+    storyboard = {
+        "reading_order": "right-to-left",
+        "panels": [
+            {
+                "panel": 1,
+                "placement": "整页单格",
+                "shot": "",
+                "camera": "",
+                "scene": "",
+                "characters": [first, second],
+                "narration": "",
+            }
+        ],
+    }
+
+    _, captions, summary = plugin._build_comic_prompts(storyboard, replacements, 4000)
+
+    assert captions == ["girl, white hair, fox ears, waking up"]
+    assert summary.count("狐莉") == 1
+
+
+def test_comic_build_supports_two_library_characters_in_panel() -> None:
+    """Give each library character its own caption in a shared panel."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    replacements = [
+        (
+            "__NAI_CHARACTER_SLOT_1__",
+            "狐莉",
+            "girl, white hair, fox ears",
+            "",
+        ),
+        (
+            "__NAI_CHARACTER_SLOT_2__",
+            "鲸鱼娘",
+            "girl, blue hair, whale tail",
+            "",
+        ),
+    ]
+    storyboard = {
+        "reading_order": "right-to-left",
+        "panels": [
+            {
+                "panel": 1,
+                "placement": "整页单格",
+                "shot": "",
+                "camera": "",
+                "scene": "",
+                "characters": [
+                    {
+                        "slot": "__NAI_CHARACTER_SLOT_1__",
+                        "identity": "anything, girl",
+                        "state": "handing a bun",
+                        "dialogue": "",
+                    },
+                    {
+                        "slot": "__NAI_CHARACTER_SLOT_2__",
+                        "identity": "anything, girl",
+                        "state": "receiving the bun, surprised",
+                        "dialogue": "谢谢！",
+                    },
+                ],
+                "narration": "",
+            }
+        ],
+    }
+
+    _, captions, summary = plugin._build_comic_prompts(storyboard, replacements, 4000)
+
+    assert captions == [
+        "girl, white hair, fox ears, handing a bun",
+        'girl, blue hair, whale tail, receiving the bun, surprised, speech bubble, text"谢谢！"',
+    ]
+    assert "狐莉" in summary and "鲸鱼娘" in summary
 
 
 def test_comic_slot_centers_follow_stagger_table() -> None:
@@ -2115,3 +2217,93 @@ async def test_emote_ascii_input_still_uses_planner() -> None:
     plugin._plan_prompt.assert_awaited_once()
     assert plugin._plan_prompt.await_args.args[0] == "happy dance"
     assert results == []
+
+
+def test_group_policy_open_in_private_and_whitelisted_groups() -> None:
+    """Skip restriction in private chats and whitelisted groups."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {"nsfw_group_ids": ["20001"]}
+
+    assert plugin._group_is_nsfw_restricted(FakeEvent()) is False
+    whitelisted = FakeEvent()
+    whitelisted.private = False
+    assert plugin._group_is_nsfw_restricted(whitelisted) is False
+
+
+def test_group_policy_restricted_in_other_groups() -> None:
+    """Restrict groups missing from the nsfw whitelist."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {"nsfw_group_ids": ["20001"]}
+
+    event = FakeEvent()
+    event.private = False
+    event.group_id = "20002"
+
+    assert plugin._group_is_nsfw_restricted(event) is True
+
+
+@pytest.mark.asyncio
+async def test_restricted_group_forces_safe_v5c_and_pack() -> None:
+    """Force safe mode, curated model, and safe negatives in default groups."""
+    plugin = build_plugin()
+    plugin._user_nsfw_enabled = AsyncMock(return_value=True)
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
+    event = FakeEvent()
+    event.private = False
+
+    results = [result async for result in plugin.generate_image(event, "生成 雪夜少女")]
+
+    assert results == []
+    call_args = plugin._generate_from_api.await_args
+    assert call_args.args[0].startswith("rating:safe, ")
+    assert call_args.args[1] == (832, 1216)
+    assert "nude" in call_args.args[3]
+    assert "naked" in call_args.args[3]
+    assert call_args.kwargs["image_model"] == MODULE.NOVELAI_MODELS["v5c"]
+    assert call_args.kwargs["apply_nsfw"] is False
+
+
+def test_with_safe_negatives_merges_without_duplicates() -> None:
+    """Merge the safe pack without repeating existing items."""
+    merged = MODULE.NovelAIWebPlugin._with_safe_negatives("nude, lowres")
+
+    assert merged.split(", ") == ["nude", "lowres", "naked", "sex", "explicit"]
+
+
+@pytest.mark.asyncio
+async def test_status_shows_restricted_policy_in_default_group() -> None:
+    """Expose effective safe values under the default group policy."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "steps": 23,
+        "max_total_pixels": 1_048_576,
+        "max_steps": 28,
+        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+    }
+    plugin._check_access = Mock()
+    plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
+    plugin._user_nsfw_enabled = AsyncMock(return_value=True)
+    plugin._active_artist_string = AsyncMock(return_value=None)
+    plugin._generation_queue_lock = asyncio.Lock()
+    plugin._generation_queue_size = 0
+    plugin._generation_semaphore = asyncio.Semaphore(1)
+    plugin._read_subscription = AsyncMock(
+        return_value={
+            "active": True,
+            "tier": 3,
+            "trainingStepsLeft": {
+                "fixedTrainingStepsLeft": 9000,
+                "purchasedTrainingSteps": 0,
+            },
+        }
+    )
+    event = FakeEvent()
+    event.private = False
+
+    results = [result async for result in plugin.generation_status(event)]
+
+    status = results[0][1]
+    assert "绘图模型: V5C（Curated）" in status
+    assert "NSFW: safe" in status
+    assert "群策略: 默认安全组" in status
