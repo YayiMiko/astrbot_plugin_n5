@@ -6,7 +6,7 @@
 
 ## 功能特性
 
-- **多模态提示词规划**：自然语言描述由 DeepSeek（默认 `deepseek/deepseek-v4-flash-vision-exp`）规划为标签 + 自然语言的混合 Prompt，支持原生图片输入（附图即参考）。
+- **多模态提示词规划**：自然语言描述由 DeepSeek（默认 `deepseek/deepseek-flash`）规划为标签 + 自然语言的混合 Prompt，支持原生图片输入（附图即参考）。
 
 > 当前版本**不支持**图生图（img2img）与 Vibe 参考图：附图与引用图片仅用于提示词规划（vision + PNG 元数据），不会发送给 NovelAI，不消耗 Anlas。Vibe 在 V5 API 侧暂不可用，待官方放出可用接口后再做。
 - **版本化官方规则库**：NovelAI V5 模型行为以可追溯的官方来源清单和机读规则为事实层，运行时校验适用模型和来源引用，再与低优先级的本地偏好和语义补全提示组合。
@@ -80,7 +80,7 @@ pip install -r requirements.txt
 | `uc_preset` | NovelAI UC Preset 编号（`3`=None） | `3` |
 | `max_prompt_length` | Prompt 最大字符数 | `4000` |
 | `prompt_planner_enabled` | 是否启用 DeepSeek Prompt 规划 | `true` |
-| `prompt_planner_provider_id` | Prompt 规划模型 Provider ID | `deepseek/deepseek-v4-flash-vision-exp` |
+| `prompt_planner_provider_id` | Prompt 规划模型 Provider ID | `deepseek/deepseek-flash` |
 | `max_character_prompt_length` | 单个人物 Prompt 最大字符数 | `2000` |
 | `max_characters_per_prompt` | 单次描述自动引用人物的上限（`1`–`6`） | `4` |
 | `timeout_seconds` | 等待 NovelAI API 生成的超时秒数 | `180` |

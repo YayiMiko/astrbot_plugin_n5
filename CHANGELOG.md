@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.5.4 - 2026-09-11
+
+- Switch prompt planner defaults to `deepseek/deepseek-flash`.
+- Deliver generated images before identity warnings so text never blocks delivery.
+- Store the used artist string on delivery tasks for future style reuse.
+
 ## 0.5.3 - 2026-09-08
 
 - Enforce safe+V5C plus a nude-explicit negative pack in non-whitelisted groups via `nsfw_group_ids`; whitelisted groups and private chats keep personal settings. `/n5 状态` shows the effective policy.

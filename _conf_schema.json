@@ -108,7 +108,7 @@
   "prompt_planner_provider_id": {
     "description": "Prompt 规划模型 Provider ID",
     "type": "string",
-    "default": "deepseek/deepseek-v4-flash-vision-exp",
+    "default": "deepseek/deepseek-flash",
     "hint": "与群聊默认模型相互独立；Flash 延迟更低，适合日常 Prompt 规划。"
   },
   "max_character_prompt_length": {

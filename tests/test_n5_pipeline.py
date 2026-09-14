@@ -182,7 +182,7 @@ async def test_identity_planner_locks_verified_tag_and_appearance() -> None:
 
     identities, references = await plan_identities(
         FakeContext(),
-        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-flash",
         "莫宁站在雪夜车站",
         ("reference.png",),
         "",
@@ -284,7 +284,7 @@ async def test_identity_planner_repairs_failed_romanization_with_web_evidence() 
     resolver = FakeResolver()
     identities, references = await plan_identities(
         FakeContext(),
-        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-flash",
         "明日方舟角色阿米娅穿着鸣潮角色卡缇希娅的衣服",
         (),
         "",
@@ -331,7 +331,7 @@ async def test_verified_alias_cache_skips_network_repair() -> None:
     canonical = "cartethyia (wuthering waves)"
     identities, references = await plan_identities(
         FakeContext(),
-        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-flash",
         "卡缇希娅",
         (),
         "",
@@ -390,7 +390,7 @@ async def test_verified_alias_contract_recovers_an_omitted_second_character() ->
     }
     identities, _ = await plan_identities(
         FakeContext(),
-        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-flash",
         "卡提希娅教守岸人接近野猫",
         (),
         "",
@@ -490,7 +490,7 @@ async def test_creative_reference_is_researched_without_nai_character_lookup() -
     resolver = FakeResolver()
     identities, references = await plan_identities(
         FakeContext(),
-        "deepseek/deepseek-v4-flash-vision-exp",
+        "deepseek/deepseek-flash",
         "让卡提希娅打出虚式茈",
         (),
         "",

@@ -53,7 +53,7 @@ NOVELAI_PARAMS_VERSION = 4
 NOVELAI_PAT_ENV = "NOVELAI_API_TOKEN"
 DEFAULT_STEPS = 23
 DEFAULT_NEGATIVE_PROMPT = ""
-DEFAULT_PROMPT_PLANNER_PROVIDER_ID = "deepseek/deepseek-v4-flash-vision-exp"
+DEFAULT_PROMPT_PLANNER_PROVIDER_ID = "deepseek/deepseek-flash"
 DEFAULT_ARTIST_STRING_NAME = "千代NAI1"
 DEFAULT_ARTIST_STRING = (
     "artist:deyui, artist:yukisiannn, artist:kani biimu, artist:shiromochi_sakura"
@@ -307,6 +307,7 @@ class DeliveryTask(TypedDict):
     delivery_status: str
     retry_count: int
     error: str
+    artist_string: str
 
 
 class DeliveryState(TypedDict):
@@ -324,7 +325,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.5.3",
+    "0.5.4",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -453,7 +454,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.5.3",
+                    "User-Agent": "AstrBot-N5/0.5.4",
                 },
                 follow_redirects=False,
             )
@@ -1702,6 +1703,7 @@ class NovelAIWebPlugin(star.Star):
                     ).strip(),
                     "retry_count": retry_count,
                     "error": str(raw_task.get("error", ""))[:500],
+                    "artist_string": str(raw_task.get("artist_string", "")),
                 }
             )
         return {"version": 1, "tasks": tasks}
@@ -1728,12 +1730,14 @@ class NovelAIWebPlugin(star.Star):
         self,
         event: AstrMessageEvent,
         output_path: Path,
+        artist_string: str = "",
     ) -> str:
         """Create one generated-image delivery task.
 
         Args:
             event: Request event identifying the sender and conversation.
             output_path: Verified generated image path.
+            artist_string: Artist string used for this generation, saved for reuse.
 
         Returns:
             Unique delivery task identifier.
@@ -1750,6 +1754,7 @@ class NovelAIWebPlugin(star.Star):
             "delivery_status": "pending",
             "retry_count": 0,
             "error": "",
+            "artist_string": artist_string,
         }
         async with self._delivery_state_lock:
             state = self._load_delivery_state()
@@ -2762,6 +2767,7 @@ class NovelAIWebPlugin(star.Star):
         *,
         task_id: str | None = None,
         retry_count: int = 0,
+        artist_string: str = "",
     ) -> None:
         """Send one image at most once and reconcile ambiguous ACK timeouts.
 
@@ -2770,8 +2776,11 @@ class NovelAIWebPlugin(star.Star):
             output_path: Verified image file to send.
             task_id: Existing task identifier for manual resend.
             retry_count: Number of sends already attempted for the task.
+            artist_string: Artist string used for this generation, saved for reuse.
         """
-        active_task_id = task_id or await self._record_delivery_task(event, output_path)
+        active_task_id = task_id or await self._record_delivery_task(
+            event, output_path, artist_string
+        )
         current_retry_count = max(0, retry_count)
         last_error = ""
         delivery_uncertain = False
@@ -3643,9 +3652,11 @@ class NovelAIWebPlugin(star.Star):
                 image_model = NOVELAI_MODELS["v5c"]
             selected_artist = await self._active_artist_string(event)
             artist_prefix_length = 0
+            deliver_artist_string = ""
             if selected_artist is not None:
                 _, artist_content = selected_artist
                 artist_prefix_length = len(artist_content) + 2
+                deliver_artist_string = artist_content
             planner_max_length = max_prompt_length - artist_prefix_length
             prompt_text, character_replacements = await self._resolve_character_slots(
                 event, prompt_text
@@ -3825,13 +3836,15 @@ class NovelAIWebPlugin(star.Star):
                 return
         finally:
             await self._leave_generation_queue()
+        await self._deliver_generated_image(
+            event, output_path, artist_string=deliver_artist_string
+        )
         if unresolved_identities:
             yield event.plain_result(
                 "未能用 NovelAI 官方词表精确确认："
                 + "、".join(unresolved_identities)
                 + "。本次已保留 DS4F 给出的候选与外观描述。"
             )
-        await self._deliver_generated_image(event, output_path)
 
     async def _generate_from_api(
         self,

@@ -494,7 +494,7 @@ async def test_outfit_source_is_verified_without_adding_a_visible_character(
     """Keep a named wardrobe source out of native visible-character slots."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
         "max_characters_per_prompt": 4,
     }
     plugin.context = SimpleNamespace()
@@ -560,7 +560,7 @@ async def test_creative_reference_context_does_not_create_an_extra_character(
     """Pass a famous technique as trusted scene context for the real subject."""
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
         "max_characters_per_prompt": 4,
     }
     plugin.context = SimpleNamespace()
@@ -790,7 +790,7 @@ async def test_planner_accepts_concise_character_design_without_retry() -> None:
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "prompt_planner_enabled": True,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     thin_response = Mock(
         completion_text=(
@@ -820,7 +820,7 @@ async def test_planner_rejects_invented_slot_and_enforces_empty_contract() -> No
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "prompt_planner_enabled": True,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     invented_slot_response = Mock(
         completion_text=(
@@ -865,7 +865,7 @@ async def test_planner_system_prompt_lists_only_required_character_slots() -> No
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "prompt_planner_enabled": True,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     response = Mock(
         completion_text=(
@@ -1408,7 +1408,7 @@ async def test_chibi_planning_keeps_hard_style_and_removes_realism() -> None:
     plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
     plugin.config = {
         "prompt_planner_enabled": True,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     response = Mock(
         completion_text=(
@@ -1584,7 +1584,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
         "steps": 23,
         "max_total_pixels": 1_048_576,
         "max_steps": 28,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     plugin._check_access = Mock()
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
@@ -1609,7 +1609,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     assert len(results) == 1
     status = results[0][1]
     assert "队列: 生成中 1，等待 2，总计 3" in status
-    assert "Prompt 模型: deepseek/deepseek-v4-flash-vision-exp" in status
+    assert "Prompt 模型: deepseek/deepseek-flash" in status
     assert "绘图模型: V5F（Full）" in status
     assert "当前画风: 千代noob" in status
     assert "NSFW: 开" in status
@@ -2278,7 +2278,7 @@ async def test_status_shows_restricted_policy_in_default_group() -> None:
         "steps": 23,
         "max_total_pixels": 1_048_576,
         "max_steps": 28,
-        "prompt_planner_provider_id": "deepseek/deepseek-v4-flash-vision-exp",
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
     }
     plugin._check_access = Mock()
     plugin._user_generation_size = AsyncMock(return_value=(832, 1216))
@@ -2307,3 +2307,39 @@ async def test_status_shows_restricted_policy_in_default_group() -> None:
     assert "绘图模型: V5C（Curated）" in status
     assert "NSFW: safe" in status
     assert "群策略: 默认安全组" in status
+
+
+@pytest.mark.asyncio
+async def test_unresolved_warning_follows_image_delivery() -> None:
+    """Deliver the image before yielding identity warnings."""
+    plugin = build_plugin()
+    plugin._resolve_planned_character_slots = AsyncMock(
+        return_value=("planned prompt", [], ["咩仔"], ""),
+    )
+    event = FakeEvent()
+
+    results = [
+        result async for result in plugin.generate_image(event, "生成 咩仔在客厅")
+    ]
+
+    assert event.sent[0][0] == "image"
+    assert len(results) == 1
+    assert "咩仔" in results[0][1]
+
+
+@pytest.mark.asyncio
+async def test_delivery_task_records_artist_string(tmp_path: Path) -> None:
+    """Persist the used artist string alongside delivery tasks."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {}
+    plugin._delivery_state_lock = asyncio.Lock()
+    plugin._delivery_state_path = Mock(return_value=tmp_path / "deliveries.json")
+    event = FakeEvent()
+
+    task_id = await plugin._record_delivery_task(
+        event, Path("generated.png"), "artist:deyui, watercolor"
+    )
+
+    state = plugin._load_delivery_state()
+    assert state["tasks"][0]["task_id"] == task_id
+    assert state["tasks"][0]["artist_string"] == "artist:deyui, watercolor"
