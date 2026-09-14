@@ -186,6 +186,38 @@ COMIC_UC_PRESET_HEAVY = 0
 COMIC_MAX_PANELS = 4
 COMIC_SCALE = 7.0
 COMIC_SLOT_CENTER_XS = (0.1, 0.3, 0.5, 0.7, 0.9)
+# One-shot style recommendation from /n5 画风推荐. Stored per QQ user, applied
+# to the artist slot of the next generation in any mode, then cleared.
+STYLE_RECOMMEND_MAX_ARTISTS = 4
+# Minimum Danbooru posts for a live artist tag; filters typo-squat junk while
+# keeping established artists. Removed-but-famous artists bypass this floor
+# through the trusted list below.
+STYLE_RECOMMEND_MIN_TAG_POSTS = 100
+# Famous artists removed from Danbooru whose tags remain in NAI's vocabulary.
+STYLE_RECOMMEND_TRUSTED_ARTISTS = ("ask", "fukahire")
+STYLE_RECOMMEND_MAX_DESIRE_CHARS = 200
+STYLE_RECOMMEND_SLOT_NAME = "画风推荐"
+STYLE_RECOMMEND_REALISM_PATTERN = re.compile(
+    r"(?:写实|照片|摄影|真人|photoreal|realistic|\b3d\b|cgi)",
+    re.IGNORECASE,
+)
+# Danbooru tag lookup backing recommendation verification. NovelAI's
+# suggest-tags endpoint only returns prefix completions, so it can never
+# confirm an artist tag; Danbooru shares NAI's tag vocabulary instead.
+DANBOORU_TAG_LOOKUP_URL = "https://danbooru.donmai.us/tags.json"
+STYLE_RECOMMENDER_SYSTEM_PROMPT = (
+    "你是 NovelAI V5 的画风推荐器。用户用中文描述想要的画风，你只返回严格 JSON："
+    '{"artists": ["..."], "styles": "...", "reason": "..."}。'
+    "artists 是 4 个擅长该画风的画师名，必须用 Danbooru 画师名"
+    "（小写英文、下划线连接，如 koyama_hirokazu），不要加 artist: 前缀；"
+    "优先选择 P 站粉丝数高、作品多的知名二次元画师"
+    "（如 ask、mika_pikazo、fukahire、yukisiannn、deyui 一类的一线画师），"
+    "不要推荐冷门小众画师；artists 必须是可在 Danbooru 查到的画师 tag，"
+    "严禁输出中文名、日文汉字名、P 站昵称或自创拼写；"
+    "styles 是英文 NAI 风格标签，用逗号连接；"
+    "reason 是一句中文推荐理由。"
+    "只输出 JSON，不要解释。"
+)
 
 
 class ArtistLibraryState(TypedDict):
@@ -276,6 +308,15 @@ class PendingCharacterChange(TypedDict):
     expires_at: float
 
 
+class StyleRecommendation(TypedDict):
+    """Hold one verified artist and style slot for the next generation."""
+
+    artists: str
+    styles: str
+    reason: str
+    slot: str
+
+
 class BugReport(TypedDict):
     """Persist one user-submitted NovelAI plugin bug report."""
 
@@ -325,7 +366,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.5.4",
+    "0.6.0",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -350,7 +391,9 @@ class NovelAIWebPlugin(star.Star):
         self._pending_character_changes: dict[
             tuple[str, str], PendingCharacterChange
         ] = {}
+        self._pending_style_recommendations: dict[str, StyleRecommendation] = {}
         self._api_client: httpx.AsyncClient | None = None
+        self._web_client: httpx.AsyncClient | None = None
         self._migrate_legacy_state()
 
     @staticmethod
@@ -454,11 +497,72 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.5.4",
+                    "User-Agent": "AstrBot-N5/0.6.0",
                 },
                 follow_redirects=False,
             )
         return self._api_client
+
+    def _get_web_client(self) -> httpx.AsyncClient:
+        """Create or reuse the unauthenticated public-web HTTP client.
+
+        Returns:
+            A reusable asynchronous HTTP client without any API token.
+        """
+        if self._web_client is None:
+            self._web_client = httpx.AsyncClient(
+                headers={"User-Agent": "AstrBot-N5/0.6.0"},
+                follow_redirects=False,
+            )
+        return self._web_client
+
+    async def _verify_recommended_artist(self, name: str) -> str | None:
+        """Confirm one recommended artist against Danbooru's tag library.
+
+        Args:
+            name: Planner-supplied artist name in any separator style.
+
+        Returns:
+            Canonical ``artist:`` tag when Danbooru lists an established
+            artist tag or the name is trusted, else None.
+        """
+        normalized = re.sub(r"[\s_]+", "_", name.strip(" ,")).casefold()
+        if normalized.startswith("artist:"):
+            normalized = normalized.removeprefix("artist:")
+        if not normalized:
+            return None
+        if normalized in STYLE_RECOMMEND_TRUSTED_ARTISTS:
+            return f"artist:{normalized}"
+        try:
+            response = await self._get_web_client().get(
+                DANBOORU_TAG_LOOKUP_URL,
+                params={
+                    "search[name_matches]": normalized,
+                    "search[category]": 1,
+                    "limit": 10,
+                },
+                timeout=12,
+            )
+            response.raise_for_status()
+            entries = response.json()
+        except (httpx.HTTPError, ValueError, TypeError):
+            return None
+        if not isinstance(entries, list):
+            return None
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = entry.get("name")
+            post_count = entry.get("post_count")
+            if (
+                isinstance(entry_name, str)
+                and entry_name.casefold() == normalized
+                and entry.get("category") == 1
+                and isinstance(post_count, int)
+                and post_count >= STYLE_RECOMMEND_MIN_TAG_POSTS
+            ):
+                return f"artist:{entry_name}"
+        return None
 
     async def _read_subscription(self) -> dict[str, object]:
         """Read the current NovelAI subscription through PAT authentication.
@@ -561,6 +665,7 @@ class NovelAIWebPlugin(star.Star):
                 "  尾缀 横图/方图/超宽屏 指定本次尺寸，默认 832x1216 竖图",
                 "/n5 漫画 <剧情> - 规划并生成多格漫画页（最多 4 格）",
                 "/n5 表情包 <情绪> [配字 <文字>] - 生成方形 Q 版表情包",
+                "/n5 画风推荐 <风格描述> - 推荐画师与风格词，下一次生成自动使用",
                 "/n5 nsfw [开|safe] - 查看或切换 NSFW/safe，不带参数时取反",
                 "/n5 原始 <Prompt> - 跳过自然语言规划，原样生成",
                 "/n5 角色 [名称] - 列出或查看自己的角色",
@@ -3065,6 +3170,171 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError(f"本群画师串中不存在「{normalized_name}」。")
         return f"画师串「{normalized_name}」\n{content}"
 
+    async def _recommend_style(
+        self,
+        event: AstrMessageEvent,
+        desire: str,
+    ) -> str:
+        """Recommend verified artists and style tags for the next generation.
+
+        Args:
+            event: Message event identifying the requesting QQ user.
+            desire: User-provided style description in any language.
+
+        Returns:
+            Reply text describing the stored one-shot recommendation.
+
+        Raises:
+            NovelAIWebError: If planning is disabled, the model response is
+                invalid, or no recommended artist passes tag verification.
+        """
+        normalized_desire = re.sub(r"\s+", " ", desire).strip(" ,，;；:：")
+        if not normalized_desire:
+            raise NovelAIWebError("用法：/n5 画风推荐 <风格描述>")
+        if len(normalized_desire) > STYLE_RECOMMEND_MAX_DESIRE_CHARS:
+            raise NovelAIWebError(
+                f"风格描述过长，请控制在 {STYLE_RECOMMEND_MAX_DESIRE_CHARS} 字以内。"
+            )
+        if not bool(self.config.get("prompt_planner_enabled", True)):
+            raise NovelAIWebError("Prompt 规划已关闭，无法使用画风推荐。")
+        provider_id = str(
+            self.config.get(
+                "prompt_planner_provider_id",
+                DEFAULT_PROMPT_PLANNER_PROVIDER_ID,
+            )
+        ).strip()
+        if not provider_id:
+            raise NovelAIWebError("prompt_planner_provider_id 不能为空。")
+        system_prompt = STYLE_RECOMMENDER_SYSTEM_PROMPT
+        if STYLE_RECOMMEND_REALISM_PATTERN.search(normalized_desire):
+            system_prompt += "用户明确要求写实或摄影风格，本次允许推荐写实系画师。"
+        else:
+            system_prompt += "用户未要求写实风格，只能推荐二次元画师。"
+        try:
+            response = await self.context.llm_generate(
+                chat_provider_id=provider_id,
+                prompt=f"想要的画风：{normalized_desire}",
+                system_prompt=system_prompt,
+                request_max_retries=2,
+                temperature=0,
+            )
+        except Exception as exc:
+            raise NovelAIWebError("画风推荐失败，请稍后再试。") from exc
+        raw_response = str(response.completion_text or "").strip()
+        fenced = re.fullmatch(
+            r"```(?:json)?\s*(.*?)\s*```",
+            raw_response,
+            re.DOTALL | re.IGNORECASE,
+        )
+        if fenced:
+            raw_response = fenced.group(1)
+        try:
+            payload = json.loads(raw_response)
+        except (json.JSONDecodeError, TypeError) as exc:
+            raise NovelAIWebError("画风推荐模型没有返回有效结果。") from exc
+        if not isinstance(payload, dict) or not isinstance(
+            payload.get("artists"), list
+        ):
+            raise NovelAIWebError("画风推荐模型没有返回有效结果。")
+        artist_names = list(
+            dict.fromkeys(
+                name.strip(" ,")
+                for name in payload["artists"]
+                if isinstance(name, str) and name.strip(" ,")
+            )
+        )[:STYLE_RECOMMEND_MAX_ARTISTS]
+        raw_styles = payload.get("styles")
+        if isinstance(raw_styles, list):
+            style_text = ", ".join(
+                item.strip(" ,")
+                for item in raw_styles
+                if isinstance(item, str) and item.strip(" ,")
+            )
+        elif isinstance(raw_styles, str):
+            style_text = re.sub(r"\s+", " ", raw_styles).strip(" ,")
+        else:
+            style_text = ""
+        raw_reason = payload.get("reason")
+        reason = raw_reason.strip() if isinstance(raw_reason, str) else ""
+        if not artist_names:
+            raise NovelAIWebError("画风推荐为空，请换个描述重试。")
+        verified: list[str] = []
+        for artist_name in artist_names:
+            canonical_tag = await self._verify_recommended_artist(artist_name)
+            if canonical_tag:
+                verified.append(canonical_tag)
+        if not verified:
+            logger.info(
+                "[n5] style recommendation rejected: candidates=%s verified=%s",
+                ",".join(artist_names),
+                ",".join(verified),
+            )
+            raise NovelAIWebError(
+                "推荐的画师均未能通过 Danbooru 画师库校验"
+                f"（{'、'.join(artist_names)}），本次未保存，请换个描述重试。"
+            )
+        sender_id = self._artist_owner_id(event)
+        self._pending_style_recommendations[sender_id] = {
+            "artists": "、".join(verified),
+            "styles": style_text,
+            "reason": reason,
+            "slot": ", ".join([*verified, style_text] if style_text else verified),
+        }
+        logger.info(
+            "[n5] style recommendation stored: %s",
+            ",".join(verified),
+        )
+        lines = [
+            "已保存画风推荐（下一次生成时自动使用，用后清空）：",
+            f"画师：{'、'.join(verified)}",
+        ]
+        if style_text:
+            lines.append(f"风格：{style_text}")
+        if reason:
+            lines.append(reason)
+        return "\n".join(lines)
+
+    def _take_style_recommendation(
+        self,
+        event: AstrMessageEvent,
+    ) -> tuple[str, str] | None:
+        """Pop the pending style recommendation for this QQ user, if any.
+
+        Args:
+            event: Message event identifying the requesting QQ user.
+
+        Returns:
+            Recommendation slot name and content, or None when absent.
+        """
+        sender_id = self._artist_owner_id(event)
+        pending = self._pending_style_recommendations.pop(sender_id, None)
+        if pending is None:
+            return None
+        return STYLE_RECOMMEND_SLOT_NAME, pending["slot"]
+
+    def _pending_style_text(self, event: AstrMessageEvent) -> str:
+        """Describe the pending style recommendation or its usage.
+
+        Args:
+            event: Message event identifying the requesting QQ user.
+
+        Returns:
+            Pending recommendation details, or usage help when absent.
+        """
+        sender_id = self._artist_owner_id(event)
+        pending = self._pending_style_recommendations.get(sender_id)
+        if pending is None:
+            return "用法：/n5 画风推荐 <风格描述>\n示例：/n5 画风推荐 淡色水彩复古风格"
+        lines = [
+            "待生效的画风推荐（下一次生成时自动使用）：",
+            f"画师：{pending['artists']}",
+        ]
+        if pending["styles"]:
+            lines.append(f"风格：{pending['styles']}")
+        if pending["reason"]:
+            lines.append(pending["reason"])
+        return "\n".join(lines)
+
     async def _join_generation_queue(self) -> int:
         """Register a generation request and return the number ahead of it."""
         async with self._generation_queue_lock:
@@ -3284,6 +3554,10 @@ class NovelAIWebPlugin(star.Star):
                 nsfw_enabled = False
                 image_model = NOVELAI_MODELS["v5c"]
             selected_artist = await self._active_artist_string(event)
+            style_pending = (
+                self._pending_style_recommendations.get(self._artist_owner_id(event))
+                is not None
+            )
             async with self._generation_queue_lock:
                 queue_total = self._generation_queue_size
                 queue_active = (
@@ -3341,6 +3615,7 @@ class NovelAIWebPlugin(star.Star):
             f"Prompt 模型: {planner_provider}\n"
             f"绘图模型: {NOVELAI_MODEL_LABELS[image_model]}\n"
             f"当前画风: {selected_artist[0] if selected_artist else '原生'}\n"
+            f"待生效画风推荐: {'有' if style_pending else '无'}\n"
             f"NSFW: {'开' if nsfw_enabled else 'safe'}\n"
             f"群策略: {policy_label}\n"
             f"尺寸: {width}x{height}\n"
@@ -3575,6 +3850,19 @@ class NovelAIWebPlugin(star.Star):
             yield event.plain_result(character_text)
             return
 
+        if subcommand == "画风推荐":
+            try:
+                self._check_access(event)
+                if arguments:
+                    reply_text = await self._recommend_style(event, arguments)
+                else:
+                    reply_text = self._pending_style_text(event)
+            except NovelAIWebError as exc:
+                yield event.plain_result(str(exc))
+                return
+            yield event.plain_result(reply_text)
+            return
+
         if subcommand not in {"生成", "原始", "漫画", "表情包"}:
             yield event.plain_result(
                 "请输入生图描述。\n"
@@ -3651,6 +3939,9 @@ class NovelAIWebPlugin(star.Star):
                 nsfw_enabled = False
                 image_model = NOVELAI_MODELS["v5c"]
             selected_artist = await self._active_artist_string(event)
+            recommended_artist = self._take_style_recommendation(event)
+            if recommended_artist is not None:
+                selected_artist = recommended_artist
             artist_prefix_length = 0
             deliver_artist_string = ""
             if selected_artist is not None:

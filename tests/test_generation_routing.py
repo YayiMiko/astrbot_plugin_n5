@@ -180,6 +180,7 @@ def build_plugin(
     }
     plugin._generation_semaphore = asyncio.Semaphore(1)
     plugin._check_access = Mock()
+    plugin._pending_style_recommendations = {}
     plugin._active_artist_string = AsyncMock(return_value=None)
     plugin._resolve_character_slots = AsyncMock(
         side_effect=lambda _event, prompt: (prompt, []),
@@ -1590,6 +1591,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
     plugin._user_nsfw_enabled = AsyncMock(return_value=True)
     plugin._active_artist_string = AsyncMock(return_value=("千代noob", "artist:test"))
+    plugin._pending_style_recommendations = {}
     plugin._generation_queue_lock = asyncio.Lock()
     plugin._generation_queue_size = 3
     plugin._generation_semaphore = asyncio.Semaphore(0)
@@ -1612,6 +1614,7 @@ async def test_status_reports_queue_and_models_without_generation_lock() -> None
     assert "Prompt 模型: deepseek/deepseek-flash" in status
     assert "绘图模型: V5F（Full）" in status
     assert "当前画风: 千代noob" in status
+    assert "待生效画风推荐: 无" in status
     assert "NSFW: 开" in status
     plugin._read_subscription.assert_awaited_once()
 
@@ -2285,6 +2288,7 @@ async def test_status_shows_restricted_policy_in_default_group() -> None:
     plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
     plugin._user_nsfw_enabled = AsyncMock(return_value=True)
     plugin._active_artist_string = AsyncMock(return_value=None)
+    plugin._pending_style_recommendations = {}
     plugin._generation_queue_lock = asyncio.Lock()
     plugin._generation_queue_size = 0
     plugin._generation_semaphore = asyncio.Semaphore(1)
@@ -2343,3 +2347,407 @@ async def test_delivery_task_records_artist_string(tmp_path: Path) -> None:
     state = plugin._load_delivery_state()
     assert state["tasks"][0]["task_id"] == task_id
     assert state["tasks"][0]["artist_string"] == "artist:deyui, watercolor"
+
+
+class FakeDanbooruResponse:
+    """Return a canned Danbooru artist lookup payload."""
+
+    def __init__(self, entries: list) -> None:
+        """Store the artist entries returned for one lookup."""
+        self._entries = entries
+
+    def raise_for_status(self) -> None:
+        """Accept every canned response as successful."""
+
+    def json(self) -> list:
+        """Return the canned artist entries."""
+        return self._entries
+
+
+class FakeDanbooruClient:
+    """Confirm only established artist tags for recommendation tests."""
+
+    TAG_POSTS = {
+        "ask": 0,
+        "yukisiannn": 800,
+        "koyama_hirokazu": 500,
+        "mika_pikazo": 1119,
+        "fukahire": 0,
+        "tiny_artist": 5,
+    }
+
+    def __init__(self) -> None:
+        """Track lookup names to prove trusted artists skip HTTP."""
+        self.looked_up: list[str] = []
+
+    async def get(self, url: str, params=None, timeout=None) -> FakeDanbooruResponse:
+        """Return one artist-category entry for known tags, none otherwise."""
+        name = str((params or {}).get("search[name_matches]", ""))
+        self.looked_up.append(name)
+        if name in self.TAG_POSTS:
+            return FakeDanbooruResponse(
+                [
+                    {
+                        "name": name,
+                        "category": 1,
+                        "post_count": self.TAG_POSTS[name],
+                    }
+                ]
+            )
+        return FakeDanbooruResponse([])
+
+
+def build_recommend_plugin(payload: dict) -> MODULE.NovelAIWebPlugin:
+    """Build a plugin serving one canned recommendation response.
+
+    Args:
+        payload: JSON payload returned by the mocked planner.
+
+    Returns:
+        Plugin with planner and artist verification mocked.
+    """
+    plugin = build_plugin()
+    plugin.context = SimpleNamespace(
+        llm_generate=AsyncMock(
+            return_value=SimpleNamespace(
+                completion_text=json.dumps(payload, ensure_ascii=False)
+            )
+        )
+    )
+    plugin._web_client = FakeDanbooruClient()
+    return plugin
+
+
+def test_style_recommend_bare_shows_usage_and_pending() -> None:
+    """Show usage without a pending recommendation and details with one."""
+    plugin = build_plugin()
+
+    assert "用法" in plugin._pending_style_text(FakeEvent())
+
+    plugin._pending_style_recommendations["10001"] = {
+        "artists": "artist:ask",
+        "styles": "watercolor, retro",
+        "reason": "淡色复古水彩。",
+        "slot": "artist:ask, watercolor, retro",
+    }
+    pending_text = plugin._pending_style_text(FakeEvent())
+    assert "artist:ask" in pending_text
+    assert "watercolor, retro" in pending_text
+
+
+def test_style_recommendation_consumed_once() -> None:
+    """Pop the pending slot on first take and report absence after that."""
+    plugin = build_plugin()
+    plugin._pending_style_recommendations["10001"] = {
+        "artists": "artist:ask",
+        "styles": "watercolor",
+        "reason": "",
+        "slot": "artist:ask, watercolor",
+    }
+    event = FakeEvent()
+
+    assert plugin._take_style_recommendation(event) == (
+        "画风推荐",
+        "artist:ask, watercolor",
+    )
+    assert plugin._take_style_recommendation(event) is None
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_stores_verified_artists() -> None:
+    """Keep suggest-tags verified artists and drop unknown names."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["ask", "unknown_artist_xyz", "yukisiannn", "koyama_hirokazu"],
+            "styles": "watercolor, retro",
+            "reason": "淡色复古水彩。",
+        },
+    )
+
+    reply = await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert "artist:ask" in reply and "artist:yukisiannn" in reply
+    assert "unknown_artist_xyz" not in reply
+    assert "watercolor, retro" in reply
+    pending = plugin._pending_style_recommendations["10001"]
+    assert pending["slot"] == (
+        "artist:ask, artist:yukisiannn, artist:koyama_hirokazu, watercolor, retro"
+    )
+    system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "只能推荐二次元画师" in system_prompt
+    assert "P 站" in system_prompt
+    assert "中文名" in system_prompt
+    assert (
+        plugin.context.llm_generate.await_args.kwargs["chat_provider_id"]
+        == MODULE.DEFAULT_PROMPT_PLANNER_PROVIDER_ID
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_allows_realistic_for_photo_desire() -> None:
+    """Lift the anime-only default when the desire asks for photos."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["ask", "yukisiannn", "koyama_hirokazu"],
+            "styles": "",
+            "reason": "",
+        },
+    )
+
+    await plugin._recommend_style(FakeEvent(), "复古胶片照片风格")
+
+    system_prompt = plugin.context.llm_generate.await_args.kwargs["system_prompt"]
+    assert "允许推荐写实系画师" in system_prompt
+    assert plugin._pending_style_recommendations["10001"]["slot"] == (
+        "artist:ask, artist:yukisiannn, artist:koyama_hirokazu"
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_accepts_spaced_artist_names() -> None:
+    """Verify spaced planner names through the artist:-prefixed candidate."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["koyama hirokazu", "mika pikazo", "fukahire"],
+            "styles": "watercolor, retro",
+            "reason": "淡色复古水彩。",
+        },
+    )
+
+    reply = await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert "artist:koyama_hirokazu" in reply
+    assert "artist:mika_pikazo" in reply
+    assert "artist:fukahire" in reply
+    assert (
+        plugin._pending_style_recommendations["10001"]["slot"]
+        == "artist:koyama_hirokazu, artist:mika_pikazo, artist:fukahire,"
+        " watercolor, retro"
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_rejects_unverified_artists() -> None:
+    """Store nothing when every recommended artist fails verification."""
+    plugin = build_recommend_plugin(
+        {"artists": ["unknown_artist_xyz"], "styles": "watercolor", "reason": ""},
+    )
+
+    with pytest.raises(MODULE.NovelAIWebError, match="均未能通过"):
+        await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert plugin._pending_style_recommendations == {}
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_rejects_low_post_tags() -> None:
+    """Reject artist tags below the established-tag post floor."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["tiny_artist", "unknown_artist_xyz"],
+            "styles": "watercolor",
+            "reason": "",
+        }
+    )
+
+    with pytest.raises(MODULE.NovelAIWebError, match="均未能通过"):
+        await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert plugin._pending_style_recommendations == {}
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_trusts_removed_artists_without_lookup() -> None:
+    """Accept trusted removed artists without any tag lookup."""
+    plugin = build_recommend_plugin(
+        {"artists": ["ask", "fukahire"], "styles": "", "reason": ""}
+    )
+
+    await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert plugin._pending_style_recommendations["10001"]["slot"] == (
+        "artist:ask, artist:fukahire"
+    )
+    assert plugin._web_client.looked_up == []
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_accepts_partial_verification() -> None:
+    """Store verified artists even when some candidates fail."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["ask", "yukisiannn", "unknown_artist_xyz"],
+            "styles": "watercolor",
+            "reason": "",
+        },
+    )
+
+    await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert plugin._pending_style_recommendations["10001"]["slot"] == (
+        "artist:ask, artist:yukisiannn, watercolor"
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_caps_at_four_artists() -> None:
+    """Cap the fusion string at four artists even when more verify."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": [
+                "ask",
+                "yukisiannn",
+                "koyama_hirokazu",
+                "mika pikazo",
+                "fukahire",
+            ],
+            "styles": "watercolor",
+            "reason": "",
+        },
+    )
+
+    await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+    assert plugin._pending_style_recommendations["10001"]["slot"] == (
+        "artist:ask, artist:yukisiannn, artist:koyama_hirokazu,"
+        " artist:mika_pikazo, watercolor"
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_rejects_empty_artist_list() -> None:
+    """Reject a recommendation payload without any artist."""
+    plugin = build_recommend_plugin(
+        {"artists": [], "styles": "watercolor", "reason": ""},
+    )
+
+    with pytest.raises(MODULE.NovelAIWebError, match="推荐为空"):
+        await plugin._recommend_style(FakeEvent(), "淡色水彩复古风格")
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_overwrites_previous() -> None:
+    """Replace the pending recommendation on a second request."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["ask", "yukisiannn", "koyama_hirokazu"],
+            "styles": "watercolor",
+            "reason": "",
+        },
+    )
+    event = FakeEvent()
+
+    await plugin._recommend_style(event, "淡色水彩复古风格")
+    plugin.context.llm_generate = AsyncMock(
+        return_value=SimpleNamespace(
+            completion_text=json.dumps(
+                {
+                    "artists": ["yukisiannn", "ask", "koyama_hirokazu"],
+                    "styles": "retro",
+                    "reason": "",
+                },
+                ensure_ascii=False,
+            )
+        )
+    )
+    await plugin._recommend_style(event, "复古海报风格")
+
+    assert plugin._pending_style_recommendations["10001"]["slot"] == (
+        "artist:yukisiannn, artist:ask, artist:koyama_hirokazu, retro"
+    )
+
+
+@pytest.mark.asyncio
+async def test_style_recommend_command_stores_and_shows_pending() -> None:
+    """Serve the recommend subcommand and the bare pending view."""
+    plugin = build_recommend_plugin(
+        {
+            "artists": ["ask", "yukisiannn", "koyama_hirokazu"],
+            "styles": "watercolor",
+            "reason": "",
+        },
+    )
+    event = FakeEvent()
+
+    results = [
+        result
+        async for result in plugin.generate_image(event, "画风推荐 淡色水彩复古风格")
+    ]
+
+    assert len(results) == 1 and results[0][0] == "plain"
+    assert "已保存画风推荐" in results[0][1]
+
+    results = [result async for result in plugin.generate_image(event, "画风推荐")]
+
+    assert len(results) == 1 and results[0][0] == "plain"
+    assert "artist:ask" in results[0][1]
+
+
+@pytest.mark.asyncio
+async def test_generation_consumes_style_recommendation_once() -> None:
+    """Apply the pending slot to one generation and clear it afterwards."""
+    plugin = build_plugin()
+    plugin._pending_style_recommendations["10001"] = {
+        "artists": "artist:ask",
+        "styles": "watercolor",
+        "reason": "",
+        "slot": "artist:ask, watercolor",
+    }
+
+    results = [
+        result async for result in plugin.generate_image(FakeEvent(), "生成 雪夜少女")
+    ]
+
+    assert plugin._generate_from_api.await_args.args[0] == (
+        "artist:ask, nsfw, watercolor, planned prompt"
+    )
+    assert plugin._pending_style_recommendations == {}
+    assert results == []
+
+    results = [
+        result async for result in plugin.generate_image(FakeEvent(), "生成 雪夜少女")
+    ]
+
+    assert plugin._generate_from_api.await_args.args[0] == "nsfw, planned prompt"
+    assert results == []
+
+
+@pytest.mark.asyncio
+async def test_status_reports_pending_style_recommendation() -> None:
+    """Expose a pending recommendation in the status output."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {
+        "steps": 23,
+        "max_total_pixels": 1_048_576,
+        "max_steps": 28,
+        "prompt_planner_provider_id": "deepseek/deepseek-flash",
+    }
+    plugin._check_access = Mock()
+    plugin._user_image_model = AsyncMock(return_value=MODULE.NOVELAI_MODELS["v5f"])
+    plugin._user_nsfw_enabled = AsyncMock(return_value=True)
+    plugin._active_artist_string = AsyncMock(return_value=None)
+    plugin._pending_style_recommendations = {
+        "10001": {
+            "artists": "artist:ask",
+            "styles": "watercolor",
+            "reason": "",
+            "slot": "artist:ask, watercolor",
+        }
+    }
+    plugin._generation_queue_lock = asyncio.Lock()
+    plugin._generation_queue_size = 0
+    plugin._generation_semaphore = asyncio.Semaphore(1)
+    plugin._read_subscription = AsyncMock(
+        return_value={
+            "active": True,
+            "tier": 3,
+            "trainingStepsLeft": {
+                "fixedTrainingStepsLeft": 9000,
+                "purchasedTrainingSteps": 0,
+            },
+        }
+    )
+
+    results = [result async for result in plugin.generation_status(FakeEvent())]
+
+    assert "待生效画风推荐: 有" in results[0][1]

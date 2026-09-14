@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.0 - 2026-09-14
+
+- Add `/n5 画风推荐`: the planner recommends artists (suggest-tags verified, anime by default unless a realistic style is requested) and style tags; the recommendation fills the artist slot of the next generation in any mode and is cleared after use. Bare `/n5 画风推荐` shows the pending pick, and `/n5 状态` shows whether one is pending.
+- Recommend a 3-4 artist fusion string per request (fewer than 3 verified artists rejects the recommendation), preferring popular Pixiv anime artists; artist names verify in both plain and `artist:`-prefixed forms.
+- Verify recommended artists against the Danbooru artist library instead of NovelAI suggest-tags, which only returns prefix completions and can never confirm a multi-word artist tag.
+- Verify against Danbooru artist-category tags with a 100-post floor, trust removed-but-famous artists (`ask`, `fukahire`), and store 1-4 verified artists instead of requiring 3.
+
 ## 0.5.4 - 2026-09-11
 
 - Switch prompt planner defaults to `deepseek/deepseek-flash`.
