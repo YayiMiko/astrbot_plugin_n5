@@ -366,7 +366,7 @@ class NovelAIWebError(Exception):
     PLUGIN_NAME,
     "YayiMiko",
     "Generate NovelAI V5 images with multimodal prompt planning and identity locks.",
-    "0.6.0",
+    "0.6.1",
 )
 class NovelAIWebPlugin(star.Star):
     """Call NovelAI with a persistent API token and strict free-tier guards."""
@@ -497,7 +497,7 @@ class NovelAIWebPlugin(star.Star):
                 base_url=NOVELAI_API_BASE_URL,
                 headers={
                     "Authorization": f"Bearer {self._load_api_token()}",
-                    "User-Agent": "AstrBot-N5/0.6.0",
+                    "User-Agent": "AstrBot-N5/0.6.1",
                 },
                 follow_redirects=False,
             )
@@ -511,7 +511,7 @@ class NovelAIWebPlugin(star.Star):
         """
         if self._web_client is None:
             self._web_client = httpx.AsyncClient(
-                headers={"User-Agent": "AstrBot-N5/0.6.0"},
+                headers={"User-Agent": "AstrBot-N5/0.6.1"},
                 follow_redirects=False,
             )
         return self._web_client
@@ -672,7 +672,7 @@ class NovelAIWebPlugin(star.Star):
                 "/n5 画风 [名称|默认|原生] - 查看或切换画风",
                 "/n5 模型 [V5C|V5F] - 查看或切换绘图模型",
                 "/n5 状态 - 检查 API 与当前设置",
-                "角色与画风管理仍支持：添加画师串、创建人物、删除人物、确认。",
+                "角色与画风管理仍支持：添加画师串、保存画风、创建人物、删除人物、确认。",
             ]
         )
 
@@ -3170,6 +3170,29 @@ class NovelAIWebPlugin(star.Star):
             raise NovelAIWebError(f"本群画师串中不存在「{normalized_name}」。")
         return f"画师串「{normalized_name}」\n{content}"
 
+    def _last_delivery_artist_string(self, event: AstrMessageEvent) -> str:
+        """Return the artist string of this user's latest styled delivery.
+
+        Args:
+            event: Message event identifying the requesting QQ user.
+
+        Returns:
+            Artist slot content that actually took effect last time.
+
+        Raises:
+            NovelAIWebError: If the user has no styled delivery on record.
+        """
+        sender_id = self._artist_owner_id(event)
+        state = self._load_delivery_state()
+        for task in reversed(state["tasks"]):
+            if (
+                task["sender_id"] == sender_id
+                and task["generated"]
+                and task["artist_string"].strip(" ,")
+            ):
+                return task["artist_string"].strip(" ,")
+        raise NovelAIWebError("你还没有带画风的成功生图记录，先正常生一次图再保存。")
+
     async def _recommend_style(
         self,
         event: AstrMessageEvent,
@@ -3728,6 +3751,25 @@ class NovelAIWebPlugin(star.Star):
                 yield event.plain_result(str(exc))
                 return
             yield event.plain_result(f"已保存本群画师串「{name.strip()}」。")
+            return
+
+        if subcommand == "保存画风":
+            try:
+                self._check_access(event)
+                name = arguments.strip()
+                if not name:
+                    raise NovelAIWebError("用法：/n5 保存画风 <串名称>")
+                artist_content = self._last_delivery_artist_string(event)
+                await self._add_artist_string(event, name, artist_content)
+            except NovelAIWebError as exc:
+                yield event.plain_result(str(exc))
+                return
+            yield event.plain_result(
+                f"已将上次生图实际使用的画风保存为画师串「{name}」：\n"
+                f"{artist_content}\n"
+                "（生效槽位原样，可能混有推荐附带的风格词；"
+                "手写内容请用 /n5 添加画师串）"
+            )
             return
 
         if subcommand == "切换画师串":

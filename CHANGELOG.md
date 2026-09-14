@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.6.1 - 2026-09-14
+
+- Add `/n5 保存画风`: save your last generation's effective artist slot as a named preset. Unlike `/n5 添加画师串` (hand-written content), it stores the exact effective slot, which may include recommendation style tags.
+
 ## 0.6.0 - 2026-09-14
 
 - Add `/n5 画风推荐`: the planner recommends artists (suggest-tags verified, anime by default unless a realistic style is requested) and style tags; the recommendation fills the artist slot of the next generation in any mode and is cleared after use. Bare `/n5 画风推荐` shows the pending pick, and `/n5 状态` shows whether one is pending.

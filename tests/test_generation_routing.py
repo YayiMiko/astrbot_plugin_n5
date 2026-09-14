@@ -2751,3 +2751,114 @@ async def test_status_reports_pending_style_recommendation() -> None:
     results = [result async for result in plugin.generation_status(FakeEvent())]
 
     assert "待生效画风推荐: 有" in results[0][1]
+
+
+def make_delivery_task(task_id: str, sender_id: str, artist_string: str) -> dict:
+    """Build one delivery history entry for save-style tests."""
+    return {
+        "task_id": task_id,
+        "created_at": "",
+        "sender_id": sender_id,
+        "conversation": "private:10001",
+        "group_id": "",
+        "output_path": f"{task_id}.png",
+        "generated": True,
+        "delivery_status": "sent",
+        "retry_count": 0,
+        "error": "",
+        "artist_string": artist_string,
+    }
+
+
+def test_last_delivery_artist_string_picks_user_latest(tmp_path: Path) -> None:
+    """Skip empty slots and other users when reading delivery history."""
+    plugin = MODULE.NovelAIWebPlugin.__new__(MODULE.NovelAIWebPlugin)
+    plugin.config = {}
+    delivery_path = tmp_path / "deliveries.json"
+    plugin._delivery_state_path = Mock(return_value=delivery_path)
+    delivery_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tasks": [
+                    make_delivery_task("old", "10001", ""),
+                    make_delivery_task("other", "10002", "artist:bogus"),
+                    make_delivery_task("new", "10001", "artist:ask, watercolor"),
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    assert (
+        plugin._last_delivery_artist_string(CharacterEvent())
+        == "artist:ask, watercolor"
+    )
+
+
+@pytest.mark.asyncio
+async def test_save_style_promotes_last_delivery_slot(tmp_path: Path) -> None:
+    """Save the user's latest effective artist slot as a named preset."""
+    plugin = build_plugin()
+    plugin._delivery_state_lock = asyncio.Lock()
+    delivery_path = tmp_path / "deliveries.json"
+    plugin._delivery_state_path = Mock(return_value=delivery_path)
+    plugin._artist_state_lock = asyncio.Lock()
+    plugin._artist_state_path = Mock(return_value=tmp_path / "artist_strings.json")
+    delivery_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "tasks": [
+                    make_delivery_task("old", "10001", ""),
+                    make_delivery_task("other", "10002", "artist:bogus"),
+                    make_delivery_task("new", "10001", "artist:ask, watercolor"),
+                ],
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    event = FakeEvent()
+
+    results = [
+        result async for result in plugin.generate_image(event, "保存画风 我的串")
+    ]
+
+    assert len(results) == 1 and results[0][0] == "plain"
+    assert "我的串" in results[0][1]
+    assert "artist:ask, watercolor" in results[0][1]
+    assert "添加画师串" in results[0][1]
+    names_text = await plugin._artist_string_names_text(event)
+    assert "我的串" in names_text
+
+
+@pytest.mark.asyncio
+async def test_save_style_without_styled_delivery_errors(tmp_path: Path) -> None:
+    """Explain that one styled generation is needed before saving."""
+    plugin = build_plugin()
+    plugin._delivery_state_lock = asyncio.Lock()
+    plugin._delivery_state_path = Mock(return_value=tmp_path / "deliveries.json")
+    plugin._artist_state_lock = asyncio.Lock()
+    plugin._artist_state_path = Mock(return_value=tmp_path / "artist_strings.json")
+
+    results = [
+        result async for result in plugin.generate_image(FakeEvent(), "保存画风 我的串")
+    ]
+
+    assert results == [
+        ("plain", "你还没有带画风的成功生图记录，先正常生一次图再保存。")
+    ]
+
+
+@pytest.mark.asyncio
+async def test_save_style_without_name_shows_usage() -> None:
+    """Require a preset name for the save command."""
+    plugin = build_plugin()
+
+    results = [
+        result async for result in plugin.generate_image(FakeEvent(), "保存画风")
+    ]
+
+    assert results == [("plain", "用法：/n5 保存画风 <串名称>")]
